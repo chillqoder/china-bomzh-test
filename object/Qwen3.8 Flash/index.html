@@ -1,0 +1,1363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>The Fisherman — Low-Poly Three.js Study</title>
+<style>
+  :root { color-scheme: light; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #e9e5db; }
+  body { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; }
+  #c { display: block; width: 100%; height: 100%; }
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(115% 95% at 50% 38%, rgba(255,255,255,0.30) 0%, rgba(255,255,255,0) 48%),
+      radial-gradient(125% 120% at 50% 55%, rgba(40,44,40,0) 58%, rgba(36,40,38,0.22) 100%);
+  }
+  #hint, #title {
+    position: fixed; bottom: 20px; pointer-events: none;
+    transition: opacity .9s ease;
+  }
+  #hint { left: 22px; color: #62665a; font-size: 11px; letter-spacing: .2em; text-transform: uppercase; opacity: .85; }
+  #title { right: 24px; text-align: right; color: #6f7361; font-size: 12px; font-style: italic; opacity: .7; }
+  #hint.gone { opacity: 0; }
+  #err {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 8vw;
+    color: #6b3b2c; font-size: 15px; text-align: center; background: #e9e5db; z-index: 5;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="vignette"></div>
+<div id="hint">drag to orbit &nbsp;·&nbsp; scroll to zoom</div>
+<div id="title">the fisherman — procedural low&#8209;poly study</div>
+<div id="err">Could not load Three.js from the CDN — check the network connection and reload.</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.161.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.161.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+document.getElementById('hint') &&
+  setTimeout(() => document.getElementById('hint').classList.add('gone'), 7000);
+
+/* =========================================================================
+   0 · UTILITIES
+   ========================================================================= */
+const V3 = THREE.Vector3;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+/* local Y-axis vector after an euler rotation (used to chain tapered segments) */
+function up(len, rot) {
+  return new V3(0, len, 0).applyEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
+}
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rnd = mulberry32(20240612);
+const rr = (lo, hi) => lo + rnd() * (hi - lo);
+
+const _colCache = new Map();
+function col(hex) {
+  let c = _colCache.get(hex);
+  if (!c) { c = new THREE.Color(hex); _colCache.set(hex, c); }
+  return c;
+}
+const WHITE = new THREE.Color(0xffffff);
+function shade(hex, k) { return col(hex).clone().multiplyScalar(k); }
+
+/* facet colouring: tops brighter, undersides darker → readable silhouette */
+function facet(base, o = {}) {
+  const top = o.top ?? 1.07, bot = o.bot ?? 0.76, front = o.front ?? 1.03,
+        back = o.back ?? 0.88, side = o.side ?? 0.97, jitter = o.jitter ?? 0;
+  return (n) => {
+    let k;
+    if (n.y > 0.55) k = top; else if (n.y < -0.55) k = bot;
+    else if (n.z > 0.55) k = front; else if (n.z < -0.55) k = back;
+    else k = side;
+    if (jitter) k *= 1 + rr(-jitter, jitter);
+    return shade(base, k);
+  };
+}
+
+/* ---- procedural geometry shorthands ---- */
+function prismGeo(wb, db, wt, dt, h, dx = 0, dz = 0, twist = 0) {
+  const b = [[-wb, 0, -db], [wb, 0, -db], [wb, 0, db], [-wb, 0, db]];
+  const ct = Math.cos(twist), st = Math.sin(twist);
+  const t = [[-wt, -dt], [wt, -dt], [wt, dt], [-wt, dt]]
+    .map(p => [p[0] * ct - p[1] * st + dx, h, p[0] * st + p[1] * ct + dz]);
+  const P = [];
+  const push = (v) => P.push(v[0], v[1], v[2]);
+  const tri = (a, b2, c) => { push(a); push(b2); push(c); };
+  const quad = (a, b2, c, d) => { tri(a, b2, c); tri(a, c, d); };
+  for (let i = 0; i < 4; i++) { const j = (i + 1) % 4; quad(b[i], b[j], t[j], t[i]); }
+  tri(t[0], t[1], t[2]); tri(t[0], t[2], t[3]);
+  tri(b[0], b[3], b[2]); tri(b[0], b[2], b[1]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  g.computeVertexNormals();
+  return g;
+}
+const G = {
+  box:  (w, h, d) => new THREE.BoxGeometry(w, h, d),
+  cyl:  (rb, rt, h, s = 8, open = false) => new THREE.CylinderGeometry(rt, rb, h, s, 1, open),
+  cone: (r, h, s = 5) => new THREE.ConeGeometry(r, h, s),
+  ico:  (r, d = 0) => new THREE.IcosahedronGeometry(r, d),
+  dod:  (r) => new THREE.DodecahedronGeometry(r, 0),
+  oct:  (r) => new THREE.OctahedronGeometry(r, 0),
+  sph:  (r, ws = 7, hs = 5) => new THREE.SphereGeometry(r, ws, hs),
+  tor:  (r, t, rs = 4, ts = 9, arc = Math.PI * 2) => new THREE.TorusGeometry(r, t, rs, ts, arc),
+  ring: (i, o, s = 12) => new THREE.RingGeometry(i, o, s),
+  prism: prismGeo,
+};
+function jitterGeo(g, amt, seed = 7) {
+  const r = mulberry32(seed);
+  const p = g.attributes.position, map = new Map();
+  for (let i = 0; i < p.count; i++) {
+    const key = `${p.getX(i).toFixed(3)}|${p.getY(i).toFixed(3)}|${p.getZ(i).toFixed(3)}`;
+    let d = map.get(key);
+    if (!d) { d = [(r() - .5) * 2 * amt, (r() - .5) * 2 * amt, (r() - .5) * 2 * amt]; map.set(key, d); }
+    p.setXYZ(i, p.getX(i) + d[0], p.getY(i) + d[1], p.getZ(i) + d[2]);
+  }
+  p.needsUpdate = true; g.computeVertexNormals();
+  return g;
+}
+/* cylinder between two points (used for the rod blank & limbs on a curve) */
+function segGeo(a, b, r1, r2, seg = 5) {
+  const dir = new V3().subVectors(b, a);
+  const len = dir.length();
+  const g = new THREE.CylinderGeometry(r2, r1, len, seg, 1, false);
+  const q = new THREE.Quaternion().setFromUnitVectors(new V3(0, 1, 0), dir.clone().normalize());
+  const m = new THREE.Matrix4().compose(
+    new V3().addVectors(a, b).multiplyScalar(.5), q, new V3(1, 1, 1));
+  g.applyMatrix4(m);
+  return g;
+}
+
+/* ---- mesh builder: merges primitives into one flat-shaded vertex-coloured mesh ---- */
+const _A = new V3(), _B = new V3(), _C = new V3(), _N = new V3(),
+      _E1 = new V3(), _E2 = new V3(), _CT = new V3();
+class MB {
+  constructor() { this.p = []; this.c = []; }
+  add(geo, o = {}) {
+    const g = geo.index ? geo.toNonIndexed() : geo;
+    const pos = o.pos || [0, 0, 0];
+    const rot = o.rot || [0, 0, 0];
+    const s = Array.isArray(o.scale) ? o.scale : [o.scale ?? 1, o.scale ?? 1, o.scale ?? 1];
+    const m = new THREE.Matrix4().compose(
+      new V3(pos[0], pos[1], pos[2]),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], o.order || 'XYZ')),
+      new V3(s[0], s[1], s[2]));
+    g.applyMatrix4(m);
+    const a = g.attributes.position.array;
+    for (let i = 0; i < a.length; i += 9) {
+      _A.set(a[i], a[i + 1], a[i + 2]);
+      _B.set(a[i + 3], a[i + 4], a[i + 5]);
+      _C.set(a[i + 6], a[i + 7], a[i + 8]);
+      _E1.subVectors(_B, _A); _E2.subVectors(_C, _A); _N.crossVectors(_E1, _E2).normalize();
+      _CT.addVectors(_A, _B).add(_C).multiplyScalar(1 / 3);
+      const cc = resCol(o.color, _N, _CT);
+      this.p.push(_A.x, _A.y, _A.z, _B.x, _B.y, _B.z, _C.x, _C.y, _C.z);
+      this.c.push(cc.r, cc.g, cc.b, cc.r, cc.g, cc.b, cc.r, cc.g, cc.b);
+    }
+    g.dispose();
+    return this;
+  }
+  /* irregular slab with a clearly visible edge and thickness */
+  slab(pts, o = {}) {
+    const yT = o.yTop ?? 0, yB = o.yBot ?? 0;
+    const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+    const cz = pts.reduce((s, p) => s + p.z, 0) / pts.length;
+    const cy = pts.reduce((s, p) => s + (p.yt ?? 0), 0) / pts.length;
+    const P = pts.map(p => ({
+      t: new V3(p.x, yT + (p.yt ?? 0) + (p.gt ?? 0), p.z),
+      b: new V3(p.x, yB + (p.yb ?? 0), p.z),
+    }));
+    const cenT = new V3(cx, yT + cy, cz), cenB = new V3(cx, yB + (o.ybC ?? 0), cz);
+    const tri = (a, b, c, colorFn) => {
+      _E1.subVectors(b, a); _E2.subVectors(c, a); _N.crossVectors(_E1, _E2).normalize();
+      _CT.addVectors(a, b).add(c).multiplyScalar(1 / 3);
+      const cc = resCol(colorFn, _N, _CT);
+      this.p.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+      this.c.push(cc.r, cc.g, cc.b, cc.r, cc.g, cc.b, cc.r, cc.g, cc.b);
+    };
+    for (let i = 0; i < P.length; i++) {
+      const j = (i + 1) % P.length;
+      tri(cenT, P[i].t, P[j].t, o.topCol ?? o.color);
+      tri(P[i].t, P[j].t, P[j].b, o.sideCol ?? o.color);
+      tri(P[i].t, P[j].b, P[i].b, o.sideCol ?? o.color);
+      if (o.bottom !== false) tri(cenB, P[j].b, P[i].b, o.botCol ?? o.color);
+    }
+    return this;
+  }
+  build(mat, opts = {}) {
+    const g = new THREE.BufferGeometry();
+    if (!this.p.length) return null;
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(this.c, 3));
+    g.computeVertexNormals();
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.castShadow = opts.cast !== false;
+    mesh.receiveShadow = opts.receive !== false;
+    if (opts.name) mesh.name = opts.name;
+    return mesh;
+  }
+}
+function resCol(c, n, ctr) {
+  if (c == null) return WHITE;
+  if (typeof c === 'function') return c(n, ctr);
+  if (c.isColor) return c;
+  return col(c);
+}
+
+/* ---- materials (solid colours, flat shading) ---- */
+const MAT = {
+  body:  new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: .93, metalness: 0 }),
+  rub:   new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: .55, metalness: .04 }),
+  metal: new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: .3, metalness: .78 }),
+  env:   new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: .97, metalness: 0 }),
+  water: new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: .42, metalness: .05 }),
+  line:  new THREE.MeshStandardMaterial({ color: 0xeef1ea, roughness: .5, metalness: 0, flatShading: false }),
+};
+
+/* =========================================================================
+   1 · PALETTE
+   ========================================================================= */
+const PL = {
+  bg: 0xe8e4da,
+  skin: 0xdba377, skinWarm: 0xdf9d66, skinDark: 0xb77f52,
+  beard: 0x8f8172, beardDk: 0x746659, brow: 0x6b5a4b,
+  eyeWhite: 0xf4efe4, pupil: 0x2b2119, lip: 0x9c5f4c,
+  hat: 0x7e8858, hatDk: 0x66703f, band: 0x4c5236,
+  shirt: 0xc9963f, shirtLt: 0xd9aa5c, shirtDk: 0xa87a33,
+  vest: 0x707b4e, vestDk: 0x5b6541, vestTrim: 0x49522f,
+  pants: 0x6b5238, pantsDk: 0x50402c, pantsLt: 0x7d6244,
+  boot: 0x38443a, bootDk: 0x2a342c, sole: 0x22261f,
+  belt: 0x3b2a1d, brass: 0xb9a24c,
+  rod: 0x4a3b33, rodDk: 0x2c2522, cork: 0xc2a074, corkDk: 0xa8865d,
+  reel: 0xb4bcc0, reelDk: 0x6f787d, spoolLine: 0x8fa9a4,
+  line: 0xeef1ea,
+  floatRed: 0xc64231, floatWhite: 0xf5f1e6,
+  water: 0x3d8084, waterDk: 0x2b5f66,
+  earth: 0x7c5c3b, earthDk: 0x5c4227, dirt: 0x7b6244,
+  grass: 0x6f8f42, grassDk: 0x55702f, grassLt: 0x8fae51,
+  rock: 0x8d9192, rockDk: 0x6f7375, moss: 0x748a4a,
+  reed: 0x7d8a4b, reedDk: 0x5f6b38, mace: 0x6a4a2c,
+  bucket: 0x8f9ba0, bucketDk: 0x6b767a,
+};
+
+/* =========================================================================
+   2 · RENDERER · SCENE · CAMERA · LIGHTS
+   ========================================================================= */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(window.innerWidth, window.innerHeight, false);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PL.bg);
+scene.fog = new THREE.Fog(PL.fog ?? 0xe4e0d5, 9.5, 26);
+
+const camera = new THREE.PerspectiveCamera(41, window.innerWidth / window.innerHeight, .05, 120);
+camera.position.set(2.6, 1.58, 3.6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0.12, 0.98, 0.45);
+controls.enableDamping = true;
+controls.dampingFactor = .07;
+controls.minDistance = 1.5;
+controls.maxDistance = 9;
+controls.maxPolarAngle = Math.PI * .495;
+controls.minPolarAngle = Math.PI * .06;
+controls.enablePan = false;
+controls.rotateSpeed = .85;
+controls.update();
+
+/* soft warm daylight */
+const hemi = new THREE.HemisphereLight(0xf2ece0, 0x8d7a5c, 1.15);
+scene.add(hemi);
+
+const sun = new THREE.DirectionalLight(0xfff1d6, 2.6);
+sun.position.set(3.4, 5.4, 2.7);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = .5;
+sun.shadow.camera.far = 16;
+sun.shadow.camera.left = -3.4; sun.shadow.camera.right = 3.4;
+sun.shadow.camera.top = 3.4; sun.shadow.camera.bottom = -3.4;
+sun.shadow.bias = -0.0006;
+sun.shadow.normalBias = 0.018;
+scene.add(sun);
+scene.add(sun.target);
+sun.target.position.set(0.1, .7, .4);
+
+const fill = new THREE.DirectionalLight(0xcfe2ea, .75);
+fill.position.set(-3.2, 2.4, -2.2);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffe6c2, .6);
+rim.position.set(-1.2, 1.6, -4.2);
+scene.add(rim);
+
+/* =========================================================================
+   3 · DIORAMA  (riverbank, water, rocks, grass, reeds, bucket)
+   ========================================================================= */
+const WORLD_UP = 0.0;            // grass surface level the fisherman stands on
+const WATER_Y = -0.06;           // water surface
+
+function blob(cx, cz, rBase, rVar, n, seed, sx = 1, sz = 1, flat = 0) {
+  const r = mulberry32(seed), ph = r() * 6.28, out = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + ph;
+    const wob = 1 + rVar * (0.55 * Math.sin(a * 2.3 + seed) + 0.3 * Math.sin(a * 3.7 + seed * 1.7)
+                              + 0.24 * Math.sin(a * 5.1 + seed * .7));
+    const rad = Math.max(.2, rBase * wob);
+    out.push({
+      x: cx + Math.cos(a) * rad * sx,
+      z: cz + Math.sin(a) * rad * sz,
+      gt: flat ? (r() - .5) * flat : 0,
+      yt: (r() - .5) * .012,
+      yb: (r() - .5) * .02,
+    });
+  }
+  return out;
+}
+
+const env = new THREE.Group();
+scene.add(env);
+
+/* --- water --- */
+{
+  const mb = new MB();
+  mb.slab(blob(0.15, 2.5, 2.3, .1, 22, 11, 2.05, 1.0, .012), {
+    yTop: WATER_Y, yBot: WATER_Y - .4,
+    topCol: facet(PL.water, { top: 1.06, side: .96, bot: .68, jitter: .05 }),
+    sideCol: facet(PL.waterDk, { top: .9, side: .8, bot: .55 }),
+    botCol: shade(PL.waterDk, .5),
+  });
+  env.add(mb.build(MAT.water, { cast: false, name: 'water' }));
+}
+
+/* --- earthen bank with visible edge + thickness --- */
+{
+  const mb = new MB();
+  const prof = blob(-0.05, -0.55, 1.0, .16, 20, 5, 1.28, 1.0);
+  mb.slab(prof, {
+    yTop: -0.012, yBot: -0.24,
+    topCol: facet(PL.earth, { top: 1.05, side: .95, bot: .7, jitter: .05 }),
+    sideCol: facet(PL.earthDk, { top: 1.05, side: .95, bot: .72, jitter: .07 }),
+    botCol: shade(PL.earthDk, .6),
+  });
+  env.add(mb.build(MAT.env, { cast: false, name: 'bank-earth' }));
+
+  /* grassy top layer, slightly inset so the earth edge reads underneath */
+  const gm = new MB();
+  const gp = blob(-0.05, -0.55, 0.94, .13, 20, 5, 1.24, 1.0, .018);
+  gm.slab(gp, {
+    yTop: WORLD_UP, yBot: -0.028,
+    topCol: facet(PL.grass, { top: 1.06, side: 1.0, bot: .78, jitter: .06 }),
+    sideCol: facet(PL.grassDk, { top: 1.0, side: .85, bot: .6 }),
+    botCol: shade(PL.grassDk, .6),
+  });
+  env.add(gm.build(MAT.env, { cast: false, name: 'bank-grass' }));
+
+  /* trampled patch of earth around the fishing spot */
+  const dm = new MB();
+  dm.slab(blob(0.02, -0.32, .44, .22, 14, 9, 1.3, 1.0, .01), {
+    yTop: WORLD_UP + 0.003, yBot: WORLD_UP - .03,
+    topCol: facet(PL.dirt, { top: .96, side: .92, bot: .74, jitter: .05 }),
+    sideCol: facet(PL.earth, { top: .74, side: .66, bot: .5 }),
+  });
+  env.add(dm.build(MAT.env, { cast: false, name: 'bank-dirt' }));
+}
+
+/* --- shoreline stones & angular rocks --- */
+{
+  const mb = new MB();
+  const stoneSpots = [
+    [ 0.62, 0.44, .07], [-0.46, 0.40, .085], [ 0.16, 0.5, .06],
+    [-0.82, 0.14, .09], [ 0.92, 0.0, .075], [-0.2, 0.54, .05],
+    [ 0.54, -0.46, .065], [-0.86, -0.4, .075], [-1.12, -0.08, .065],
+  ];
+  stoneSpots.forEach(([x, z, s], i) => {
+    const g = jitterGeo(G.ico(s, 0), s * .28, 40 + i);
+    mb.add(g, {
+      pos: [x, WORLD_UP - s * .35, z],
+      rot: [rr(-.4, .4), rr(0, 3), rr(-.3, .3)],
+      scale: [1, rr(.45, .7), rr(.8, 1.1)],
+      color: facet(PL.rock, { top: 1.05, side: .96, bot: .62, jitter: .07 }),
+    });
+  });
+
+  const rocks = [
+    { x:  0.76, z: 0.30, s: .125, sy: .74, seed: 71 },
+    { x: -0.78, z: 0.0, s: .15, sy: .76, seed: 72 },
+    { x:  0.36, z: -0.74, s: .115, sy: .7, seed: 73 },
+    { x: -0.28, z: 0.44, s: .095, sy: .7, seed: 74 },
+    { x:  0.94, z: -0.36, s: .105, sy: .64, seed: 75 },
+    { x: -0.92, z: -0.46, s: .13, sy: .68, seed: 76 },
+  ];
+  rocks.forEach((r, i) => {
+    const g = jitterGeo(G.ico(r.s, 0), r.s * .3, r.seed);
+    mb.add(g, {
+      pos: [r.x, -r.s * .42, r.z],
+      rot: [rr(-.25, .25), rr(0, 3.14), rr(-.2, .2)], scale: [rr(.9, 1.25), r.sy, rr(.85, 1.15)],
+      color: (n) => {
+        if (n.y > .55) return shade(i % 2 ? PL.moss : PL.rock, 1.02);   // mossy tops
+        if (n.y < -.5) return shade(PL.rockDk, .62);
+        return shade(n.z > .4 ? PL.rock : PL.rockDk, .95);
+      },
+    });
+  });
+  env.add(mb.build(MAT.env, { name: 'rocks' }));
+}
+
+/* --- grass clusters --- */
+{
+  const mb = new MB();
+  const spots = [
+    [-0.26, 0.3], [0.3, 0.36], [-0.64, 0.14], [0.7, -0.06], [-0.5, -0.5],
+    [0.12, -0.66], [0.86, -0.54], [-0.88, -0.12], [0.5, -0.24], [-0.1, -0.9],
+    [-0.78, 0.38], [0.64, 0.5],
+  ];
+  spots.forEach(([bx, bz], si) => {
+    const n = 3 + Math.floor(rr(0, 3));
+    for (let b = 0; b < n; b++) {
+      const a = rr(0, 6.28), lean = rr(.16, .5), h = rr(.07, .13);
+      const x = bx + Math.cos(a) * rr(0, .09), z = bz + Math.sin(a) * rr(0, .09);
+      const l1 = h * .58, l2 = h * .5;
+      const r0 = [Math.cos(a) * lean, 0, -Math.sin(a) * lean];
+      const off = up(l1, r0);
+      mb.add(prismGeo(.012, .012, .007, .007, l1, 0, 0, 0), {
+        pos: [x, WORLD_UP - .012, z], rot: r0,
+        color: facet(PL.grassDk, { top: 1.05, side: .95, bot: .8 }),
+      });
+      const r1 = [Math.cos(a) * (lean + .22), 0, -Math.sin(a) * (lean + .22)];
+      mb.add(prismGeo(.007, .007, .0012, .0012, l2, 0, 0, 0), {
+        pos: [x + off.x, WORLD_UP - .012 + off.y, z + off.z], rot: r1,
+        color: facet(PL.grassLt, { top: 1.12, side: 1.0, bot: .85 }),
+      });
+    }
+  });
+  env.add(mb.build(MAT.env, { name: 'grass' }));
+}
+
+/* --- reeds along the shoreline --- */
+{
+  const mb = new MB();
+  const spots = [
+    [ 0.9, 0.36], [ 1.06, 0.1], [-0.98, 0.22], [-1.16, -0.02],
+    [ 0.08, 0.54], [-0.56, 0.44], [ 0.58, 0.5], [-0.86, 0.44],
+  ];
+  spots.forEach(([bx, bz], si) => {
+    const n = 2 + Math.floor(rr(0, 2));
+    for (let k = 0; k < n; k++) {
+      const x = bx + rr(-.1, .1), z = bz + rr(-.08, .08);
+      const h1 = rr(.17, .26), h2 = rr(.1, .17), bend = rr(.12, .3), y = WORLD_UP - .02;
+      const a = rr(0, 6.28);
+      const r0 = [Math.cos(a) * .12, 0, -Math.sin(a) * .12];
+      const o1 = up(h1, r0);
+      mb.add(prismGeo(.015, .015, .011, .011, h1, 0, 0, 0), {
+        pos: [x, y, z], rot: r0,
+        color: facet(PL.reed, { top: 1.05, side: .95, bot: .7 }),
+      });
+      const r1 = [Math.cos(a) * (.12 + bend), 0, -Math.sin(a) * (.12 + bend)];
+      const o2 = up(h2, r1);
+      mb.add(prismGeo(.011, .011, .004, .004, h2, 0, 0, 0), {
+        pos: [x + o1.x, y + o1.y, z + o1.z], rot: r1,
+        color: facet(PL.reedDk, { top: 1.02, side: .9, bot: .68 }),
+      });
+      if (rnd() > .35) {
+        mb.add(G.cyl(.012, .008, .07, 5), {
+          pos: [x + o1.x + o2.x, y + o1.y + o2.y + .03, z + o1.z + o2.z],
+          rot: r1,
+          color: facet(PL.mace, { top: 1.05, side: .9, bot: .7 }),
+        });
+      }
+    }
+  });
+  env.add(mb.build(MAT.env, { name: 'reeds' }));
+}
+
+/* --- bucket beside the boots --- */
+function buildBucket(x, z) {
+  const g = new THREE.Group();
+  const body = new MB();
+  body.add(G.cyl(.115, .138, .22, 9, true), {
+    pos: [0, .11, 0], color: facet(PL.bucket, { top: 1.06, side: .98, bot: .62, front: 1.04 }),
+  });
+  body.add(G.cyl(.113, .113, .012, 9), { pos: [0, .012, 0], color: shade(PL.bucketDk, .8) });
+  body.add(G.cyl(.146, .146, .022, 9, true), { pos: [0, .222, 0], color: facet(PL.bucketDk, { top: 1.02, side: .95, bot: .7 }) });
+  body.add(G.cyl(.1, .1, .02, 8), { pos: [0, .205, 0], color: shade(PL.waterDk, .9) });   // water inside
+  g.add(body.build(MAT.env, { name: 'bucket' }));
+
+  const hw = new MB();
+  hw.add(G.tor(.148, .009, 4, 10, Math.PI), {
+    pos: [0, .226, 0], rot: [0, Math.PI / 2, 0], color: shade(PL.reelDk, 1.05),
+  });
+  hw.add(G.cyl(.012, .012, .022, 5), { pos: [.148, .222, 0], rot: [0, 0, Math.PI / 2], color: PL.reelDk });
+  hw.add(G.cyl(.012, .012, .022, 5), { pos: [-.148, .222, 0], rot: [0, 0, Math.PI / 2], color: PL.reelDk });
+  g.add(hw.build(MAT.metal, { name: 'bucket-handle' }));
+
+  g.position.set(x, WORLD_UP, z);
+  g.rotation.y = rr(-.3, .3);
+  env.add(g);
+  return g;
+}
+buildBucket(0.56, -0.26);
+
+/* small stack of flat stones behind, keeps the bank shape interesting */
+{
+  const mb = new MB();
+  mb.add(jitterGeo(G.ico(.09, 0), .02, 91), { pos: [-0.5, WORLD_UP - .03, -0.04], scale: [1.3, .5, 1], color: facet(PL.rock, { top: 1.05, bot: .6, jitter: .05 }) });
+  mb.add(jitterGeo(G.ico(.062, 0), .016, 92), { pos: [-0.46, WORLD_UP + .01, -0.1], scale: [1.2, .55, 1], color: facet(PL.rockDk, { top: 1.05, bot: .6, jitter: .05 }) });
+  env.add(mb.build(MAT.env, { name: 'stones' }));
+}
+
+/* =========================================================================
+   4 · CHARACTER RIG
+   ========================================================================= */
+const K = {
+  hipY: .785, legX: .145, thigh: .34, shin: .32,
+  spineY: .055, neckY: .40, shY: .335, shX: .20,
+  upper: .30, fore: .28, headY: .05,
+};
+
+const rig = { root: new THREE.Group() };
+scene.add(rig.root);
+rig.root.position.set(-0.02, WORLD_UP, -0.32);
+rig.root.rotation.y = 0.10;             // faces the water (+Z), turned a touch to camera
+
+/* -- pelvis, hips, belt ------------------------------------------------- */
+rig.hips = new THREE.Group();
+rig.hips.position.set(0, K.hipY, 0);
+rig.root.add(rig.hips);
+
+{
+  const mb = new MB();
+  mb.add(prismGeo(.16, .128, .146, .116, .17, 0, .005), {
+    pos: [0, -.045, 0], color: facet(PL.pants, { top: 1.03, side: .96, bot: .72, front: 1.02 }),
+  });
+  mb.add(prismGeo(.146, .118, .146, .118, .05, 0, 0), {
+    pos: [0, .10, 0], color: facet(PL.pantsDk, { top: 1.0, side: .92, bot: .7 }),
+  });
+  /* belt */
+  mb.add(G.cyl(.162, .162, .05, 10), {
+    pos: [0, .126, 0], color: facet(PL.belt, { top: 1.05, side: .95, bot: .7, front: 1.06 }),
+  });
+  mb.add(G.box(.066, .05, .02), {
+    pos: [0, .126, .16], color: facet(PL.brass, { top: 1.1, side: 1.0, bot: .7 }),
+  });
+  mb.add(G.box(.022, .026, .024), {
+    pos: [-.026, .126, .162], color: shade(PL.belt, 1.0),
+  });
+  /* small gear on the belt: line spool + a clip */
+  mb.add(G.cyl(.026, .026, .03, 7), {
+    pos: [.146, .098, -.055], rot: [0, 0, Math.PI / 2], color: facet(PL.spoolLine, { top: 1.05, side: .9, bot: .7 }),
+  });
+  mb.add(G.tor(.022, .005, 4, 8, Math.PI * 1.45), {
+    pos: [-.15, .096, .036], rot: [Math.PI / 2, 0, 0], color: PL.reel,
+  });
+  rig.hips.add(mb.build(MAT.body, { name: 'hips' }));
+}
+
+/* -- legs ------------------------------------------------------------- */
+function buildLeg(side) {                    // side: -1 = character right, +1 = left
+  const hip = new THREE.Group();
+  hip.position.set(side * K.legX, -.03, 0);
+  rig.hips.add(hip);
+
+  const tm = new MB();
+  tm.add(prismGeo(.075, .08, .088, .094, K.thigh + .04, 0, .005), {
+    pos: [0, -(K.thigh + .02), 0], color: facet(PL.pants, { top: 1.02, side: .96, bot: .74, front: 1.04 }),
+  });
+  tm.add(prismGeo(.03, .014, .034, .016, .12, 0, .008), {              // subtle front seam
+    pos: [-.018, -.2, .092], color: facet(PL.pantsLt, { top: 1.02, side: .95, bot: .75 }),
+  });
+  hip.add(tm.build(MAT.body, { name: 'thigh' + side }));
+
+  const knee = new THREE.Group();
+  knee.position.set(0, -K.thigh, 0);
+  hip.add(knee);
+
+  const sm = new MB();
+  sm.add(prismGeo(.064, .07, .076, .082, K.shin + .02, 0, .004), {
+    pos: [0, -K.shin, 0], color: facet(PL.pants, { top: 1.0, side: .95, bot: .74, front: 1.03 }),
+  });
+  sm.add(prismGeo(.036, .014, .03, .011, .055, 0, .005), {            // knee pad
+    pos: [0, -.028, .07], color: facet(PL.pantsDk, { top: 1.0, side: .95, bot: .72 }),
+  });
+  knee.add(sm.build(MAT.body, { name: 'shin' + side }));
+
+  const ankle = new THREE.Group();
+  ankle.position.set(0, -K.shin, 0);
+  knee.add(ankle);
+
+  const bm = new MB();
+  /* rubber boot: thick sole, defined toe, tall shaft with a wide opening.
+     the sole bottom sits exactly at ankle-local y = -0.095 */
+  bm.add(prismGeo(.066, .096, .064, .092, .036, 0, 0), {
+    pos: [0, -.095, .02], color: facet(PL.sole, { top: .86, side: .8, bot: .55 }),
+  });
+  bm.add(prismGeo(.062, .088, .06, .074, .09, 0, -.016), {
+    pos: [0, -.06, .02], color: facet(PL.boot, { top: .98, side: .96, bot: .68, front: 1.02 }),
+  });
+  bm.add(prismGeo(.072, .084, .082, .092, .325, 0, .002), {
+    pos: [0, -.028, .002], color: facet(PL.boot, { top: 1.02, side: .97, bot: .66, front: 1.03 }),
+  });
+  bm.add(prismGeo(.086, .096, .082, .092, .04, 0, .002), {
+    pos: [0, .262, .002], color: facet(PL.bootDk, { top: .93, side: .95, bot: .66 }),
+  });
+  const boot = bm.build(MAT.rub, { name: 'boot' + side });
+  ankle.add(boot);
+
+  return { hip, knee, ankle, boot, side };
+}
+rig.legR = buildLeg(-1);
+rig.legL = buildLeg(+1);
+
+/* -- spine / torso (breathing pivot) ------------------------------- */
+rig.spine = new THREE.Group();
+rig.spine.position.set(0, K.spineY, 0);
+rig.hips.add(rig.spine);
+
+{
+  const mb = new MB();
+  /* shirt torso */
+  mb.add(prismGeo(.158, .126, .192, .148, .40, .0, .008), {
+    pos: [0, .02, 0], color: facet(PL.shirt, { top: 1.05, side: .98, bot: .74, front: 1.04 }),
+  });
+  mb.add(prismGeo(.186, .142, .18, .138, .032, 0, 0), {             // chest top edge
+    pos: [0, .398, 0], color: facet(PL.shirtLt, { top: 1.06, side: .98, bot: .74 }),
+  });
+  /* shirt folds */
+  mb.add(prismGeo(.014, .012, .012, .008, .2, 0, 0), {
+    pos: [-.03, .12, .13], color: facet(PL.shirtDk, { top: .95, side: .88, bot: .7 }),
+  });
+  mb.add(prismGeo(.014, .012, .012, .008, .17, 0, 0), {
+    pos: [.05, .1, .128], color: facet(PL.shirtDk, { top: .95, side: .88, bot: .7 }),
+  });
+
+  /* --- open vest: back panel, two separate front panels, thickness --- */
+  const vTop = .375, vBot = .03;
+  mb.add(prismGeo(.178, .033, .19, .035, vTop - vBot, 0, 0), {
+    pos: [0, vBot, -.126], color: facet(PL.vest, { top: 1.04, side: .97, bot: .72, back: 1.05 }),
+  });
+  [-1, 1].forEach((s) => {
+    /* front panel, leaving an open gap at the centre */
+    mb.add(prismGeo(.082, .042, .088, .045, vTop - vBot, 0, 0), {
+      pos: [s * .112, vBot, .118],
+      color: facet(PL.vest, { top: 1.05, side: .98, bot: .72, front: 1.05 }),
+    });
+    /* inner lapel edge (visible thickness of the garment) */
+    mb.add(prismGeo(.012, .046, .012, .048, vTop - vBot, 0, 0), {
+      pos: [s * .038, vBot, .118],
+      color: facet(PL.vestTrim, { top: 1.0, side: .85, bot: .6 }),
+    });
+    /* shoulder strap over the deltoid */
+    mb.add(prismGeo(.062, .042, .066, .044, .075, 0, 0), {
+      pos: [s * .132, .372, -.012], rot: [0, 0, -s * .14],
+      color: facet(PL.vestDk, { top: 1.05, side: .98, bot: .74 }),
+    });
+    /* lower patch pocket + flap */
+    mb.add(prismGeo(.062, .014, .066, .016, .095, 0, 0), {
+      pos: [s * .113, .085, .148],
+      color: facet(PL.vestDk, { top: 1.03, side: .95, bot: .7, front: 1.06 }),
+    });
+    mb.add(prismGeo(.066, .017, .06, .014, .028, 0, 0), {
+      pos: [s * .113, .172, .15],
+      color: facet(PL.vestTrim, { top: 1.02, side: .92, bot: .66 }),
+    });
+    /* seam along the front panel */
+    mb.add(prismGeo(.008, .004, .008, .004, .3, 0, .0), {
+      pos: [s * .148, .06, .148],
+      color: facet(PL.vestTrim, { top: .95, side: .85, bot: .6 }),
+    });
+  });
+  /* chest pocket with a spool of line and a spare float */
+  mb.add(prismGeo(.058, .015, .06, .015, .08, 0, 0), {
+    pos: [.138, .255, .152], color: facet(PL.vestDk, { top: 1.03, side: .95, front: 1.06 }),
+  });
+  mb.add(prismGeo(.062, .018, .056, .014, .024, 0, 0), {
+    pos: [.138, .328, .154], color: facet(PL.vestTrim, { top: 1.02, side: .92, bot: .66 }),
+  });
+  mb.add(G.cyl(.024, .024, .032, 7), {
+    pos: [.138, .35, .154], rot: [Math.PI / 2, 0, 0],
+    color: facet(PL.spoolLine, { top: 1.05, side: .92, bot: .7 }),
+  });
+  mb.add(G.cyl(.016, .016, .05, 6), {
+    pos: [.062, .352, .156], rot: [0, 0, Math.PI / 2],
+    color: facet(PL.floatRed, { top: 1.05, side: .95, bot: .7 }),
+  });
+  /* tackle pouch on the back */
+  mb.add(prismGeo(.072, .028, .066, .03, .09, 0, 0), {
+    pos: [-.12, .12, -.146], color: facet(PL.vestDk, { top: 1.02, side: .94, bot: .7, back: 1.06 }),
+  });
+  mb.add(prismGeo(.074, .032, .066, .028, .026, 0, 0), {
+    pos: [-.12, .205, -.148], color: facet(PL.vestTrim, { top: 1.0, side: .9, bot: .64 }),
+  });
+  mb.add(G.cyl(.014, .014, .012, 6), {
+    pos: [.12, .3, -.155], rot: [Math.PI / 2, 0, 0], color: PL.brass,
+  });
+  /* collar */
+  mb.add(prismGeo(.108, .098, .116, .106, .07, 0, .01), {
+    pos: [0, .4, 0], color: facet(PL.shirtLt, { top: 1.06, side: 1.0, bot: .76 }),
+  });
+  rig.spine.add(mb.build(MAT.body, { name: 'torso' }));
+}
+
+/* -- neck + head + hat ------------------------------------------- */
+rig.neck = new THREE.Group();
+rig.neck.position.set(0, K.neckY, 0);
+rig.spine.add(rig.neck);
+{
+  const mb = new MB();
+  mb.add(G.cyl(.062, .056, .1, 7), { pos: [-.005, -.02, .008], color: facet(PL.skinDark, { top: 1.0, side: .92, bot: .7 }) });
+  rig.neck.add(mb.build(MAT.body, { name: 'neck' }));
+}
+
+rig.head = new THREE.Group();
+rig.head.position.set(0, K.headY, 0);
+rig.head.scale.setScalar(1.07);
+rig.neck.add(rig.head);
+
+{
+  const mb = new MB();
+  /* angular skull: wide cheekbones, slightly narrower crown, defined jaw */
+  mb.add(prismGeo(.134, .126, .126, .12, .21, .0, .004), {
+    pos: [0, .085, 0], color: facet(PL.skin, { top: 1.05, side: .98, bot: .78, front: 1.03 }),
+  });
+  mb.add(prismGeo(.126, .122, .136, .13, .09, 0, .004), {
+    pos: [0, -.005, 0], color: facet(PL.skin, { top: 1.0, side: .97, bot: .76, front: 1.03 }),
+  });
+  mb.add(prismGeo(.1, .108, .118, .118, .06, 0, .006), {        // jaw, narrowing chin
+    pos: [0, -.055, 0], color: facet(PL.skinDark, { top: .98, side: .94, bot: .72, front: 1.0 }),
+  });
+  /* brow ridge */
+  mb.add(prismGeo(.117, .03, .117, .026, .032, 0, 0), {
+    pos: [0, .152, .106], color: facet(PL.skin, { top: 1.06, side: .98, bot: .8 }),
+  });
+  /* cheeks */
+  [-1, 1].forEach(s => {
+    mb.add(prismGeo(.045, .03, .038, .026, .06, 0, .0), {
+      pos: [s * .072, .055, .112], rot: [0, 0, -s * .12],
+      color: facet(PL.skinWarm, { top: 1.04, side: .98, bot: .8, front: 1.06 }),
+    });
+  });
+  /* small protruding nose */
+  mb.add(prismGeo(.026, .03, .012, .016, .075, 0, 0), {
+    pos: [0, .07, .122], rot: [-.3, 0, 0],
+    color: facet(PL.skinWarm, { top: 1.06, side: 1.0, bot: .82, front: 1.08 }),
+  });
+  mb.add(G.cone(.026, .05, 4), {
+    pos: [0, .12, .152], rot: [-1.1, .78, 0],
+    color: facet(PL.skinWarm, { top: 1.05, side: 1.0, bot: .8 }),
+  });
+  /* eyes: white blocks + pupils, slightly hooded */
+  [-1, 1].forEach(s => {
+    mb.add(prismGeo(.028, .014, .026, .013, .032, 0, .0), {
+      pos: [s * .056, .112, .126], rot: [0, 0, -s * .06],
+      color: facet(PL.eyeWhite, { top: 1.02, side: .98, bot: .85, front: 1.03 }),
+    });
+    mb.add(prismGeo(.014, .008, .013, .007, .026, 0, 0), {
+      pos: [s * .058, .112, .137], color: facet(PL.pupil, { top: 1.1, side: .95, bot: .8 }),
+    });
+    mb.add(prismGeo(.009, .006, .012, .005, .01, 0, 0), {        // upper lid
+      pos: [s * .056, .142, .134], color: facet(PL.skinDark, { top: 1.0, side: .9, bot: .75 }),
+    });
+    /* eyebrows */
+    mb.add(prismGeo(.034, .016, .03, .012, .02, 0, .0), {
+      pos: [s * .058, .163, .132], rot: [0, 0, s * .22],
+      color: facet(PL.brow, { top: 1.05, side: .92, bot: .7 }),
+    });
+  });
+  /* ears */
+  [-1, 1].forEach(s => {
+    mb.add(prismGeo(.014, .026, .012, .03, .055, 0, 0), {
+      pos: [s * .136, .085, -.012], rot: [0, -s * .3, s * .1],
+      color: facet(PL.skinDark, { top: 1.02, side: .96, bot: .76 }),
+    });
+  });
+  /* mouth (subtle, content) */
+  mb.add(prismGeo(.03, .012, .026, .01, .014, 0, 0), {
+    pos: [0, -.012, .132], color: facet(PL.lip, { top: 1.0, side: .9, bot: .7 }),
+  });
+  [-1, 1].forEach(s => {
+    mb.add(prismGeo(.012, .01, .008, .008, .01, 0, 0), {
+      pos: [s * .038, -.004, .128], rot: [0, 0, s * .5], color: shade(PL.lip, .92),
+    });
+  });
+
+  /* --- short angular beard following cheeks + chin --- */
+  mb.add(prismGeo(.058, .048, .05, .04, .075, 0, 0), {          // chin
+    pos: [0, -.07, .1], rot: [-.14, 0, 0],
+    color: facet(PL.beard, { top: 1.02, side: .95, bot: .74, front: 1.03 }),
+  });
+  [-1, 1].forEach(s => {
+    mb.add(prismGeo(.045, .035, .038, .03, .085, 0, 0), {         // jaw lines
+      pos: [s * .078, -.03, .072], rot: [.05, -s * .5, s * .18],
+      color: facet(PL.beard, { top: 1.0, side: .94, bot: .72 }),
+    });
+    mb.add(prismGeo(.03, .028, .026, .024, .075, 0, 0), {         // sideburn / cheek
+      pos: [s * .118, .03, .028], rot: [0, -s * .3, s * .06],
+      color: facet(PL.beardDk, { top: 1.0, side: .93, bot: .7 }),
+    });
+    mb.add(prismGeo(.03, .016, .026, .014, .022, 0, 0), {        // moustache
+      pos: [s * .03, .036, .132], rot: [0, 0, -s * .18],
+      color: facet(PL.beard, { top: 1.04, side: .96, bot: .74, front: 1.05 }),
+    });
+  });
+  mb.add(prismGeo(.1, .03, .09, .026, .05, 0, 0), {              // under-jaw / neck beard
+    pos: [0, -.09, .045], rot: [.22, 0, 0],
+    color: facet(PL.beardDk, { top: .98, side: .9, bot: .68 }),
+  });
+  rig.head.add(mb.build(MAT.body, { name: 'head' }));
+
+  /* --- hat: shaped crown, broad brim, darker band, small lure --- */
+  const hm = new MB();
+  const brim = jitterGeo(G.cyl(.235, .248, .022, 11), .012, 33);
+  hm.add(brim, {
+    pos: [0, .262, .008], rot: [-.05, .2, .03], scale: [1, 1, 1.12],
+    color: facet(PL.hat, { top: 1.06, side: .97, bot: .74, front: 1.02, jitter: .02 }),
+  });
+  hm.add(jitterGeo(G.cyl(.1, .088, .03, 9), .006, 34), {           // brim upcurl at the sides
+    pos: [0, .278, .008], color: shade(PL.hat, 1.02),
+  });
+  hm.add(prismGeo(.122, .116, .108, .1, .16, 0, .004, .18), {      // crown
+    pos: [0, .27, 0], color: facet(PL.hat, { top: 1.05, side: .98, bot: .76, jitter: .02 }),
+  });
+  hm.add(prismGeo(.1, .096, .086, .084, .03, .004, 0, .18), {      // crown dent
+    pos: [0, .425, 0], color: shade(PL.hatDk, .98),
+  });
+  hm.add(G.cyl(.131, .131, .046, 9), {                              // band
+    pos: [0, .288, .004], rot: [0, .18, 0],
+    color: facet(PL.band, { top: 1.02, side: .95, bot: .72 }),
+  });
+  /* the little lure tied to the band */
+  const lx = .126, ly = .30, lz = .055;
+  hm.add(G.cyl(.011, .008, .042, 6), {
+    pos: [lx, ly, lz], rot: [0, 0, -.6], color: facet(PL.reel, { top: 1.1, side: 1.0, bot: .7 }),
+  });
+  hm.add(G.cone(.011, .022, 5), {
+    pos: [lx + .017, ly - .02, lz], rot: [0, 0, -2.1], color: shade(PL.floatRed, 1.0),
+  });
+  hm.add(G.tor(.017, .0032, 3, 8, Math.PI * 1.5), {
+    pos: [lx - .012, ly - .033, lz + .004], rot: [Math.PI / 2, 0, .4], color: PL.reel,
+  });
+  hm.add(prismGeo(.002, .02, .001, .006, .036, 0, 0), {
+    pos: [lx - .004, ly + .012, lz - .012], rot: [.2, .3, -.7],
+    color: facet(PL.floatWhite, { top: 1.05, side: .95, bot: .8 }),
+  });
+  rig.head.add(hm.build(MAT.body, { name: 'hat' }));
+}
+
+/* -- arms ------------------------------------------------------------ */
+function buildArm(side) {              // side -1 = right (back/low hand), +1 = left (reel hand)
+  const sh = new THREE.Group();
+  sh.position.set(side * K.shX, K.shY, .01);
+  rig.spine.add(sh);
+
+  const um = new MB();
+  um.add(G.sph(.062, 6, 4), { pos: [0, .012, 0], scale: [1, .85, 1], color: facet(PL.shirt, { top: 1.06, side: .98, bot: .74 }) });
+  um.add(prismGeo(.052, .056, .062, .066, .28, 0, .003), {
+    pos: [0, -.26, 0], color: facet(PL.shirt, { top: 1.03, side: .97, bot: .74, front: 1.04 }),
+  });
+  /* rolled-up sleeve near the elbow */
+  um.add(prismGeo(.058, .062, .064, .068, .055, 0, 0), {
+    pos: [0, -.30, 0], color: facet(PL.shirtDk, { top: 1.02, side: .95, bot: .7 }),
+  });
+  um.add(prismGeo(.052, .056, .06, .064, .032, 0, 0), {
+    pos: [0, -.332, 0], color: facet(PL.shirtLt, { top: 1.05, side: .98, bot: .74 }),
+  });
+  sh.add(um.build(MAT.body, { name: 'upperArm' + side }));
+
+  const elb = new THREE.Group();
+  elb.position.set(0, -K.upper, 0);
+  sh.add(elb);
+
+  const fm = new MB();
+  fm.add(G.sph(.046, 6, 4), { pos: [0, .012, 0], scale: [1, .8, 1], color: facet(PL.skin, { top: 1.04, side: .98, bot: .78 }) });
+  fm.add(prismGeo(.038, .04, .047, .05, .30, 0, .002), {
+    pos: [0, -.28, 0], color: facet(PL.skin, { top: 1.04, side: .99, bot: .78, front: 1.03 }),
+  });
+  fm.add(prismGeo(.042, .045, .04, .043, .034, 0, 0), {              // wrist
+    pos: [0, -.284, 0], color: facet(PL.skinDark, { top: 1.0, side: .95, bot: .75 }),
+  });
+  elb.add(fm.build(MAT.body, { name: 'foreArm' + side }));
+
+  const wri = new THREE.Group();
+  wri.position.set(0, -K.fore, 0);
+  elb.add(wri);
+  const hg = buildHand(side);
+  hg.scale.setScalar(.8);
+  wri.add(hg);
+
+  return { sh, elb, wri, side, pole: new V3() };
+}
+
+/* fist built around the rod axis (local +Y = rod toward the tip,
+   local +Z = back of the hand, so the fingers wrap in the XZ plane) */
+function buildHand(side) {
+  const mb = new MB();
+  const skin = facet(PL.skin, { top: 1.05, side: .98, bot: .76, front: 1.04 });
+  const skinD = facet(PL.skinDark, { top: 1.0, side: .94, bot: .72 });
+  /* knuckle / back-of-hand block */
+  mb.add(prismGeo(.04, .02, .038, .018, .056, 0, 0), {
+    pos: [0, -.028, .033], rot: [.07, 0, 0], color: skin,
+  });
+  /* palm */
+  mb.add(prismGeo(.038, .018, .036, .016, .056, 0, 0), {
+    pos: [0, -.028, -.035], rot: [-.05, 0, 0], color: skinD,
+  });
+  /* four fingers curling around the rod */
+  const fx = [-.027, -.009, .009, .027];
+  fx.forEach((x, i) => {
+    const yaw = -(x / .03) * .8;
+    mb.add(prismGeo(.009, .016, .008, .014, .052, 0, 0), {
+      pos: [x * 1.02, -.026, -.029], rot: [0, yaw + side * .12, 0],
+      color: facet(PL.skin, { top: 1.04, side: .99, bot: .78 }),
+    });
+    mb.add(prismGeo(.008, .013, .007, .011, .03, 0, 0), {
+      pos: [x * .74, -.026, -.044], rot: [0, yaw * .55 + side * .1, 0],
+      color: facet(PL.skinWarm, { top: 1.02, side: .97, bot: .76 }),
+    });
+    mb.add(G.box(.013, .019, .013), {
+      pos: [x, .022, .023], color: facet(PL.skinDark, { top: 1.0, side: .95, bot: .74 }),
+    });
+  });
+  /* thumb pressing over the rod */
+  mb.add(prismGeo(.012, .015, .01, .013, .042, 0, 0), {
+    pos: [side * .037, -.01, -.01], rot: [.15, side * .95, side * .35], color: skin,
+  });
+  mb.add(prismGeo(.01, .013, .009, .011, .026, 0, 0), {
+    pos: [side * .024, -.024, -.03], rot: [.3, side * .6, side * .2],
+    color: facet(PL.skinWarm, { top: 1.03, side: .98, bot: .78 }),
+  });
+  return mb.build(MAT.body, { name: 'hand' + side });
+}
+
+rig.armR = buildArm(-1);
+rig.armL = buildArm(+1);
+
+/* =========================================================================
+   5 · FISHING ROD, REEL, LINE, FLOAT
+   ========================================================================= */
+const ROD = {
+  butt: new V3(.115, .905, .245),
+  tilt: .60,          // rad, forward from vertical
+  lean: -.17,         // rad, toward the character's left (+X)
+  yaw: .02,
+  handle: .22,
+  blankSegs: 14,
+  blankLen: .108,
+};
+
+const rodPivot = new THREE.Group();
+rodPivot.rotation.order = 'YXZ';
+rodPivot.position.copy(ROD.butt);
+rig.root.add(rodPivot);
+
+const rodBody = new THREE.Group();
+rodPivot.add(rodBody);
+
+/* blank polyline with a progressive bend toward the tip */
+const rodPts = [], rodDirs = [];
+{
+  let p = new V3(0, ROD.handle, 0), ang = 0;
+  rodPts.push(p.clone());
+  for (let i = 0; i < ROD.blankSegs; i++) {
+    const w = i / ROD.blankSegs;
+    ang += .004 + .024 * Math.pow(w, 1.9);            // gentle tip bend
+    const dir = new V3(0, Math.cos(ang), Math.sin(ang));
+    rodDirs.push(dir.clone());
+    p = p.clone().addScaledVector(dir, ROD.blankLen);
+    rodPts.push(p.clone());
+  }
+}
+const rodTip = rodPts[rodPts.length - 1];
+
+{
+  /* handle + reel seat */
+  const mb = new MB();
+  mb.add(G.cyl(.028, .026, .026, 7), { pos: [0, .013, 0], color: facet(PL.rodDk, { top: 1.02, side: .95, bot: .6 }) });   // end cap
+  mb.add(G.cyl(.027, .03, .13, 8), { pos: [0, .093, 0], color: facet(PL.cork, { top: 1.05, side: .98, bot: .72, jitter: .03 }) });
+  mb.add(G.cyl(.031, .031, .022, 8), { pos: [0, .122, 0], color: facet(PL.corkDk, { top: 1.0, side: .92, bot: .7 }) });    // grip band
+  mb.add(G.cyl(.029, .026, .06, 8), { pos: [0, .168, 0], color: facet(PL.cork, { top: 1.04, side: .97, bot: .72, jitter: .03 }) });
+  mb.add(G.cyl(.026, .026, .03, 7), { pos: [0, .213, 0], color: facet(PL.rodDk, { top: 1.0, side: .93, bot: .66 }) });     // reel seat ring
+  mb.add(prismGeo(.022, .03, .02, .028, .07, 0, 0), { pos: [0, .232, .018], color: facet(PL.reelDk, { top: 1.05, side: .95, bot: .7 }) });
+  rodBody.add(mb.build(MAT.body, { name: 'rod-handle' }));
+
+  /* blank: tapered, faceted segments */
+  const bb = new MB();
+  for (let i = 0; i < rodPts.length - 1; i++) {
+    const w = i / (rodPts.length - 2);
+    const r1 = .0225 * (1 - w) + .0035 * w;
+    const r2 = .0225 * (1 - (i + 1) / (rodPts.length - 2)) + .0035 * ((i + 1) / (rodPts.length - 2));
+    bb.add(segGeo(rodPts[i], rodPts[i + 1], r1, r2, 5), {
+      color: facet(PL.rod, { top: 1.08, side: 1.0, bot: .8, front: 1.04, jitter: .02 }),
+    });
+  }
+  bb.add(G.cone(.0042, .05, 4), { pos: rodTip.toArray(), rot: [Math.atan2(rodDirs[rodDirs.length - 1].z, rodDirs[rodDirs.length - 1].y), 0, 0], color: shade(PL.rodDk, 1.05) });  rodBody.add(bb.build(MAT.body, { name: 'rod-blank' }));
+
+  /* guides on the concave (line) side */
+  const gv = new MB();
+  const guideIdx = [2, 5, 8, 11, 13];
+  guideIdx.forEach((i) => {
+    const a = rodPts[i], d = rodDirs[i];
+    const perp = new V3(0, -d.y, d.x);                       // toward local +Z / bend side
+    const pos = a.clone().addScaledVector(perp, .022);
+    gv.add(G.tor(.0105, .0026, 3, 7), {
+      pos: [pos.x, pos.y, pos.z], rot: eulerFromDir(d),
+      color: facet(PL.reel, { top: 1.1, side: 1.0, bot: .75 }),
+    });
+    gv.add(prismGeo(.004, .004, .0035, .0035, .024, 0, 0), {
+      pos: [a.x, a.y, a.z], color: shade(PL.rodDk, 1.0),
+    });
+  });
+  /* tip-top guide */
+  {
+    const d = rodDirs[rodDirs.length - 1];
+    const perp = new V3(0, -d.y, d.x);
+    const pos = rodTip.clone().addScaledVector(perp, .012).addScaledVector(d, .012);
+    gv.add(G.tor(.0085, .0024, 3, 7), { pos: pos.toArray(), rot: eulerFromDir(d), color: PL.reel });
+  }
+  rodBody.add(gv.build(MAT.metal, { name: 'guides' }));
+}
+function eulerFromDir(d) {
+  const q = new THREE.Quaternion().setFromUnitVectors(new V3(0, 0, 1), d.clone().normalize());
+  const e = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+  return [e.x, e.y, e.z];
+}
+
+/* spinning reel below the blank */
+{
+  const mb = new MB();
+  const y = .30, z = .045;
+  mb.add(prismGeo(.018, .022, .016, .02, .075, 0, 0), { pos: [0, y - .035, z + .01], color: facet(PL.reelDk, { top: 1.02, side: .95, bot: .7 }) });
+  /* housing (axis along local +Z) */
+  mb.add(G.cyl(.045, .045, .08, 8), { pos: [0, y, z + .075], rot: [Math.PI / 2, 0, 0], color: facet(PL.reel, { top: 1.06, side: .98, bot: .72, jitter: .02 }) });
+  mb.add(G.cyl(.048, .036, .018, 8), { pos: [0, y, z + .122], rot: [Math.PI / 2, 0, 0], color: facet(PL.reelDk, { top: 1.03, side: .95, bot: .7 }) });
+  /* spool with line on it */
+  mb.add(G.cyl(.038, .038, .055, 8), { pos: [0, y, z + .088], rot: [Math.PI / 2, 0, 0], color: facet(PL.spoolLine, { top: 1.05, side: .96, bot: .74 }) });
+  mb.add(G.cyl(.042, .042, .008, 8), { pos: [0, y, z + .118], rot: [Math.PI / 2, 0, 0], color: facet(PL.reel, { top: 1.05, side: .98, bot: .72 }) });
+  /* bail wire */
+  mb.add(G.tor(.05, .0035, 3, 10, Math.PI * 1.1), { pos: [0, y, z + .126], rot: [0, 0, -Math.PI / 2 - .3], color: PL.reel });
+  mb.add(G.cyl(.0035, .0035, .05, 4), { pos: [.048, y + .01, z + .1], rot: [0, 0, .5], color: PL.reelDk });
+  /* crank arm + knob */
+  mb.add(prismGeo(.007, .007, .006, .006, .06, 0, 0), { pos: [.028, y + .028, z + .132], rot: [0, 0, -.7], color: facet(PL.reelDk, { top: 1.05, side: .95, bot: .7 }) });
+  mb.add(G.cyl(.011, .011, .026, 6), { pos: [.052, y + .045, z + .135], rot: [Math.PI / 2, 0, 0], color: facet(PL.rodDk, { top: 1.05, side: .95, bot: .7 }) });
+  const reelMesh = mb.build(MAT.metal, { name: 'reel' });
+  const reelGrp = new THREE.Group();
+  reelGrp.position.set(0, .315, .115);
+  reelMesh.position.set(0, -.315, -.115);
+  reelGrp.scale.setScalar(.84);
+  reelGrp.add(reelMesh);
+  rodBody.add(reelGrp);
+}
+
+/* grip reference points (rod-body local) */
+const GRIP_R = new V3(0, .105, 0);        // right hand: around the handle
+const GRIP_L = new V3(0, .30, .075);      // left hand: at the reel
+
+/* ---- floating line, float, ripples (world space) ---- */
+const lineObj = new THREE.Mesh(new THREE.BufferGeometry(), MAT.line);
+lineObj.frustumCulled = false;
+lineObj.castShadow = false;
+scene.add(lineObj);
+
+const floatGrp = new THREE.Group();
+scene.add(floatGrp);
+{
+  const mb = new MB();
+  mb.add(G.cyl(.019, .026, .048, 7), { pos: [0, .024, 0], color: facet(PL.floatWhite, { top: 1.05, side: .98, bot: .74 }) });
+  mb.add(G.cyl(.026, .019, .042, 7), { pos: [0, .07, 0], color: facet(PL.floatRed, { top: 1.05, side: .98, bot: .72 }) });
+  mb.add(G.cyl(.019, .006, .03, 6), { pos: [0, .104, 0], color: facet(PL.floatRed, { top: 1.06, side: .98, bot: .74 }) });
+  mb.add(G.cyl(.0035, .0025, .05, 4), { pos: [0, .138, 0], color: facet(PL.floatWhite, { top: 1.05, side: .98, bot: .8 }) });
+  mb.add(G.cone(.006, .02, 4), { pos: [0, .006, 0], rot: [Math.PI, 0, 0], color: shade(PL.rodDk, 1.1) });
+  floatGrp.add(mb.build(MAT.body, { name: 'float' }));
+  /* line sinking into the water */
+  const dl = new MB();
+  dl.add(G.cyl(.0022, .0022, .34, 3), { pos: [0, -.17, 0], color: shade(PL.line, .9) });
+  dl.add(G.cone(.006, .022, 3), { pos: [0, -.34, 0], rot: [Math.PI, 0, 0], color: PL.reel });
+  floatGrp.add(dl.build(MAT.env, { cast: false, name: 'under-line' }));
+}
+const FLOAT_HOME = new V3(.42, WATER_Y + .004, 1.28);
+floatGrp.position.copy(FLOAT_HOME);
+
+/* ripples around the float */
+const ripples = [];
+{
+  for (let i = 0; i < 3; i++) {
+    const g = new THREE.RingGeometry(.055, .075, 14);
+    g.rotateX(-Math.PI / 2);
+    const m = new THREE.MeshBasicMaterial({ color: 0xcdeae4, transparent: true, opacity: .45, side: THREE.DoubleSide, depthWrite: false });
+    const mesh = new THREE.Mesh(g, m);
+    mesh.position.set(FLOAT_HOME.x, WATER_Y + .006, FLOAT_HOME.z);
+    mesh.userData.phase = i / 3;
+    scene.add(mesh);
+    ripples.push(mesh);
+  }
+}
+
+/* =========================================================================
+   6 · TWO-BONE IK  (keeps both hands welded to the rod)
+   ========================================================================= */
+const NEG_Y = new V3(0, -1, 0);
+const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _m3 = new THREE.Matrix4();
+
+function aim(obj, dir) {
+  _q1.setFromUnitVectors(NEG_Y, dir.clone().normalize());
+  obj.parent.getWorldQuaternion(_q2).invert();
+  obj.quaternion.multiplyQuaternions(_q2, _q1);
+}
+
+function solveArm(arm, target, rodDir) {
+  const S = arm.sh.getWorldPosition(new V3());
+  const L1 = K.upper, L2 = K.fore;
+  const to = new V3().copy(target).sub(S);
+  const dist = clamp(to.length(), Math.abs(L1 - L2) + .06, (L1 + L2) * .975);
+  const u = to.clone().normalize();
+
+  const cosS = (L1 * L1 + dist * dist - L2 * L2) / (2 * L1 * dist);
+  const aS = Math.acos(clamp(cosS, -1, 1));
+
+  let pole = arm.pole.clone().sub(S);
+  pole.addScaledVector(u, -pole.dot(u));
+  if (pole.lengthSq() < 1e-7) pole.set(0, -1, -.2);
+  pole.normalize();
+
+  const elbowDir = u.clone().multiplyScalar(Math.cos(aS))
+    .addScaledVector(pole, Math.sin(aS)).normalize();
+  const elbow = S.clone().addScaledVector(elbowDir, L1);
+  const foreDir = new V3().copy(target).sub(elbow).normalize();
+
+  aim(arm.sh, elbowDir);
+  aim(arm.elb, foreDir);
+
+  /* hand: local +Y along the rod, local +Z along the forearm */
+  const gY = rodDir.clone();
+  gY.addScaledVector(foreDir, -gY.dot(foreDir));
+  if (gY.lengthSq() < 1e-8) gY.set(0, 1, 0);
+  gY.normalize();
+  const gX = new V3().crossVectors(gY, foreDir).normalize();
+  _m3.makeBasis(gX, gY, foreDir);
+  _q1.setFromRotationMatrix(_m3);
+  arm.wri.parent.getWorldQuaternion(_q2).invert();
+  arm.wri.quaternion.multiplyQuaternions(_q2, _q1);
+}
+
+/* =========================================================================
+   7 · POSE  (feet planted, torso lean, head toward the line)
+   ========================================================================= */
+const pose = {
+  spine: { x: -.055, y: .0, z: .015 },
+  neck: { x: -.075, y: .22, z: -.03 },
+  head: { x: -.05, y: .10, z: .0 },
+  legR: { hip: -.085, knee: .17, ankle: -.085 },
+  legL: { hip: -.175, knee: .30, ankle: .0 },
+  rod: { x: ROD.tilt, y: ROD.yaw, z: ROD.lean },
+};
+
+function setLeg(leg, p) {
+  leg.hip.rotation.x = p.hip;
+  leg.knee.rotation.x = p.knee;
+  leg.ankle.rotation.x = -(p.hip + p.knee);      // keeps the sole flat on the bank
+}
+
+function soleY(leg) {
+  rig.root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(leg.boot);
+  return box.min.y;
+}
+/* numerically adapt each hip pitch so both soles rest exactly on the ground */
+function plantFoot(leg, p, target) {
+  for (let it = 0; it < 5; it++) {
+    setLeg(leg, p);
+    const f0 = soleY(leg) - target;
+    const d = .02;
+    p.hip += d; setLeg(leg, p);
+    const f1 = soleY(leg) - target;
+    p.hip -= d;
+    const den = (f1 - f0) / d;
+    if (Math.abs(den) < 1e-5) break;
+    p.hip += clamp(-f0 / den, -.12, .12);
+    if (Math.abs(f0) < 1e-4) break;
+  }
+  setLeg(leg, p);
+}
+plantFoot(rig.legR, pose.legR, 0);
+plantFoot(rig.legL, pose.legL, 0);
+
+rig.spine.rotation.set(pose.spine.x, pose.spine.y, pose.spine.z);
+rig.neck.rotation.set(pose.neck.x, pose.neck.y, pose.neck.z);
+rig.head.rotation.set(pose.head.x, pose.head.y, pose.head.z);
+rodPivot.rotation.set(pose.rod.x, pose.rod.y, pose.rod.z);
+rig.root.updateMatrixWorld(true);
+
+/* rod direction in world space at the grips (ignores the small bend) */
+function rodWorldDir(out) {
+  rodBody.getWorldQuaternion(_q2);
+  return out.set(0, 1, 0).applyQuaternion(_q2).normalize();
+}
+
+/* elbow poles: elbows out, down and slightly back */
+function updatePoles() {
+  const S_R = rig.armR.sh.getWorldPosition(new V3());
+  const S_L = rig.armL.sh.getWorldPosition(new V3());
+  rig.armR.pole.copy(S_R).add(new V3(-.40, -.30, -.30));
+  rig.armL.pole.copy(S_L).add(new V3( .42, -.26, -.34));
+}
+updatePoles();
+
+/* =========================================================================
+   8 · FISHING LINE  (threads the guides, drops to the float)
+   ========================================================================= */
+let lineMeshGeo = null;
+function updateLine() {
+  const pts = [];
+  const q = rodBody.getWorldQuaternion(new THREE.Quaternion());
+  const wpt = (v) => rodBody.localToWorld(v.clone());
+
+  /* from the spool, along the guides, to the tip, then down to the float */
+  pts.push(wpt(new V3(0, .30, .14)));
+  [2, 5, 8, 11, 13].forEach((i) => {
+    const d = rodDirs[i], perp = new V3(0, -d.y, d.x);
+    pts.push(wpt(rodPts[i].clone().addScaledVector(perp, .021)));
+  });
+  const dLast = rodDirs[rodDirs.length - 1], perpLast = new V3(0, -dLast.y, dLast.x);
+  const tipW = wpt(rodTip.clone().addScaledVector(perpLast, .012).addScaledVector(dLast, .02));
+  pts.push(tipW);
+
+  const floatTopW = new V3(floatGrp.position.x, floatGrp.position.y + .16, floatGrp.position.z);
+  const mid = tipW.clone().lerp(floatTopW, .45);
+  mid.y -= .18;                                   // slack
+  mid.x += .05;
+  pts.push(mid, floatTopW);
+
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', .35);
+  const g = new THREE.TubeGeometry(curve, 46, .0035, 4, false);
+  if (lineMeshGeo) lineMeshGeo.dispose();
+  lineObj.geometry = g;
+  lineMeshGeo = g;
+}
+
+/* =========================================================================
+   9 · ANIMATION
+   ========================================================================= */
+const clock = new THREE.Clock();
+let seekT = null;                     // set by the debug helper for still frames
+const _dir = new V3();
+const t1 = new V3(), t2 = new V3();
+
+function tick() {
+  const t = seekT === null ? clock.getElapsedTime() : seekT;
+
+  /* breathing */
+  const br = Math.sin(t * .95);
+  rig.spine.rotation.x = pose.spine.x - .012 * br;
+  rig.spine.rotation.z = pose.spine.z + .006 * Math.sin(t * .63);
+  rig.spine.position.y = K.spineY + .006 * br;
+  rig.hips.rotation.z = .004 * Math.sin(t * .63);
+
+  /* head drifts a touch, still looking along the line */
+  rig.neck.rotation.y = pose.neck.y + .025 * Math.sin(t * .41 + 1.2);
+  rig.head.rotation.x = pose.head.x - .014 * br;
+  rig.head.rotation.z = pose.head.z + .012 * Math.sin(t * .33);
+
+  /* rod: slow coordinated sway + a fine tip tremor; hands follow via IK */
+  const s1 = Math.sin(t * .78), s2 = Math.sin(t * .53 + .8), s3 = Math.sin(t * 2.3 + 1.4);
+  rodPivot.rotation.x = pose.rod.x + .018 * s1 + .005 * s3;
+  rodPivot.rotation.z = pose.rod.z + .012 * s2;
+  rodPivot.rotation.y = pose.rod.y + .010 * Math.sin(t * .47);
+  rodPivot.position.z = ROD.butt.z + .006 * s1;
+  rodPivot.position.y = ROD.butt.y + .004 * br;
+
+  rig.root.updateMatrixWorld(true);
+  updatePoles();
+
+  const rd = rodWorldDir(_dir);
+  solveArm(rig.armR, rodBody.localToWorld(t1.copy(GRIP_R)), rd);
+  solveArm(rig.armL, rodBody.localToWorld(t2.copy(GRIP_L)), rd);
+
+  /* float bob + ripples */
+  floatGrp.position.y = FLOAT_HOME.y + .012 * Math.sin(t * 1.35 + .4);
+  floatGrp.rotation.z = .07 * Math.sin(t * 1.1);
+  floatGrp.rotation.x = .05 * Math.sin(t * .87 + 1.1);
+
+  ripples.forEach((r) => {
+    const cycle = ((t * .34 + r.userData.phase) % 1);
+    const k = .35 + cycle * 3.6;
+    r.scale.set(k, 1, k);
+    r.material.opacity = .34 * (1 - cycle) * Math.min(1, cycle * 8);
+  });
+
+  updateLine();
+
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+
+/* =========================================================================
+   10 · RESIZE
+   ========================================================================= */
+function onResize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(w, h, false);
+}
+window.addEventListener('resize', onResize);
+onResize();
+
+/* first line build, then run */
+rig.root.updateMatrixWorld(true);
+updateLine();
+tick();
+
+/* expose a tiny debug handle (keeps the interface otherwise empty) */
+window.__fisherman = { scene, camera, rig, rodBody, THREE };
+window.__cam = (px, py, pz, tx, ty, tz) => {
+  camera.position.set(px, py, pz);
+  controls.target.set(tx, ty, tz);
+  controls.update();
+  renderer.render(scene, camera);
+};
+window.__seek = (t) => { seekT = t; };
+</script>
+<script>
+  /* surface a friendly message if the module (CDN) fails to load */
+  window.addEventListener('error', (e) => {
+    if (e && e.target && e.target.tagName === 'SCRIPT') {
+      document.getElementById('err').style.display = 'flex';
+    }
+  }, true);
+  setTimeout(() => {
+    if (!window.__fisherman) document.getElementById('err').style.display = 'flex';
+  }, 8000);
+</script>
+</body>
+</html>

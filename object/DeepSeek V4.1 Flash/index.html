@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Low-Poly Fisherman</title>
+<link rel="icon" href="data:," />
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #e9ecef; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xe9ecef);
+scene.fog = new THREE.Fog(0xe9ecef, 16, 40);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 80);
+camera.position.set(3.55, 3.05, 6.7);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.32, 1.0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.enablePan = false;
+controls.minDistance = 3.2;
+controls.maxDistance = 16;
+controls.maxPolarAngle = 1.54;
+controls.update();
+
+const camParam = new URLSearchParams(location.search).get('cam');
+if (camParam) {
+  const v = camParam.split(',').map(Number);
+  if (v.length === 3 && v.every((n) => Number.isFinite(n))) camera.position.set(v[0], v[1], v[2]);
+}
+
+const hemi = new THREE.HemisphereLight(0xd9ecff, 0xa89578, 0.6);
+scene.add(hemi);
+
+const sun = new THREE.DirectionalLight(0xffeccb, 2.1);
+sun.position.set(6, 9, 5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 2;
+sun.shadow.camera.far = 26;
+sun.shadow.camera.left = -5.5;
+sun.shadow.camera.right = 5.5;
+sun.shadow.camera.top = 5.5;
+sun.shadow.camera.bottom = -5.5;
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.02;
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0xbfd6e8, 0.55);
+fill.position.set(-7, 4, -5);
+scene.add(fill);
+
+function mat(color, opts = {}) {
+  const m = new THREE.MeshStandardMaterial({
+    color,
+    flatShading: true,
+    roughness: opts.rough ?? 0.85,
+    metalness: opts.metal ?? 0
+  });
+  if (opts.doubleSide) m.side = THREE.DoubleSide;
+  return m;
+}
+
+const MAT = {
+  skin: mat(0xd79b6a, { rough: 0.8 }),
+  skinWrap: mat(0xd79b6a, { rough: 0.8, doubleSide: true }),
+  beard: mat(0x8d8578, { rough: 0.95 }),
+  eyeWhite: mat(0xf6f2e8, { rough: 0.4 }),
+  pupil: mat(0x27211d, { rough: 0.35 }),
+  shirt: mat(0xc4833d, { rough: 0.9 }),
+  vest: mat(0x707a44, { rough: 0.9 }),
+  vestDark: mat(0x59622f, { rough: 0.9 }),
+  trouser: mat(0x4a382a, { rough: 0.95 }),
+  boot: mat(0x3f4c44, { rough: 0.7 }),
+  bootDark: mat(0x333e38, { rough: 0.8 }),
+  sole: mat(0x2b2b29, { rough: 0.95 }),
+  belt: mat(0x4e3423, { rough: 0.85 }),
+  buckle: mat(0xbb9349, { metal: 0.5, rough: 0.4 }),
+  hat: mat(0x6e7444, { rough: 0.95 }),
+  hatBand: mat(0x4b3a26, { rough: 0.9 }),
+  rodHandle: mat(0x33261a, { rough: 0.7 }),
+  rodGrip: mat(0xc7a06a, { rough: 0.85 }),
+  rodSeat: mat(0x26262a, { rough: 0.55 }),
+  rodBlank: mat(0x4c4a45, { rough: 0.5 }),
+  reel: mat(0x2e3438, { rough: 0.5, metal: 0.3 }),
+  spool: mat(0x9aa3a8, { rough: 0.35, metal: 0.6 }),
+  crank: mat(0x1f1f22, { rough: 0.5, metal: 0.3 }),
+  lureRed: mat(0xc0392b, { rough: 0.5 }),
+  lureWhite: mat(0xf2efe6, { rough: 0.45 }),
+  hook: mat(0x8a8f94, { metal: 0.6, rough: 0.35 }),
+  earth: mat(0x8a6b4e, { rough: 1 }),
+  grass: mat(0x7d9a4e, { rough: 0.95 }),
+  grass2: mat(0x6d8a42, { rough: 0.95 }),
+  grass3: mat(0x88a457, { rough: 0.95 }),
+  reed: mat(0x5f7a3a, { rough: 0.9 }),
+  cattail: mat(0x6b4a2e, { rough: 0.95 }),
+  rock: mat(0x8f8d86, { rough: 0.95 }),
+  rock2: mat(0x9a9790, { rough: 0.95 }),
+  rock3: mat(0x807e78, { rough: 0.95 }),
+  water: mat(0x4a9d96, { rough: 0.3, metal: 0.05 }),
+  bucket: mat(0x7b8a92, { rough: 0.45, metal: 0.45 }),
+  bucketWater: mat(0x2f4a52, { rough: 0.3 }),
+  pedestal: mat(0xdfe2e4, { rough: 1 })
+};
+
+function addMesh(parent, geo, material, x = 0, y = 0, z = 0) {
+  const m = new THREE.Mesh(geo, material);
+  m.position.set(x, y, z);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+
+function box(parent, w, h, d, material, x = 0, y = 0, z = 0) {
+  return addMesh(parent, new THREE.BoxGeometry(w, h, d), material, x, y, z);
+}
+
+function cyl(parent, rTop, rBottom, h, material, x = 0, y = 0, z = 0, seg = 7, open = false, thetaStart = 0, thetaLength = Math.PI * 2) {
+  return addMesh(parent, new THREE.CylinderGeometry(rTop, rBottom, h, seg, 1, open, thetaStart, thetaLength), material, x, y, z);
+}
+
+function sph(parent, r, material, x = 0, y = 0, z = 0, ws = 8, hs = 6) {
+  return addMesh(parent, new THREE.SphereGeometry(r, ws, hs), material, x, y, z);
+}
+
+function seg(parent, a, b, rA, rB, material, rs = 7) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  const m = addMesh(parent, new THREE.CylinderGeometry(rB, rA, len, rs, 1), material, (a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  return m;
+}
+
+function solveElbow(S, T, l1, l2, poleDir) {
+  const d = new THREE.Vector3().subVectors(T, S);
+  const dist = Math.min(d.length(), (l1 + l2) * 0.999);
+  const n = d.clone().normalize();
+  const a = (l1 * l1 - l2 * l2 + dist * dist) / (2 * dist);
+  const h = Math.sqrt(Math.max(l1 * l1 - a * a, 0));
+  const mid = S.clone().addScaledVector(n, a);
+  const p = poleDir.clone().addScaledVector(n, -poleDir.dot(n));
+  if (p.lengthSq() < 1e-6) p.set(0, -1, 0);
+  p.normalize();
+  return mid.addScaledVector(p, h);
+}
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(20261012);
+
+function circlePoints(cx, cz, radius, n, jitter) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const r = radius * (1 + (rng() * 2 - 1) * jitter);
+    pts.push([cx + Math.cos(a) * r, cz + Math.sin(a) * r]);
+  }
+  return pts;
+}
+
+function shapeFrom(pts) {
+  const s = new THREE.Shape();
+  pts.forEach((p, i) => (i ? s.lineTo(p[0], -p[1]) : s.moveTo(p[0], -p[1])));
+  s.closePath();
+  return s;
+}
+
+function pathFrom(pts) {
+  const p = new THREE.Path();
+  pts.forEach((q, i) => (i ? p.lineTo(q[0], -q[1]) : p.moveTo(q[0], -q[1])));
+  p.closePath();
+  return p;
+}
+
+const bankPts = circlePoints(0, 0.4, 2.8, 14, 0.06);
+const pondHolePts = circlePoints(0, 1.5, 1.3, 12, 0.03);
+const bankShape = shapeFrom(bankPts);
+bankShape.holes.push(pathFrom(pondHolePts));
+
+const bank = new THREE.Mesh(new THREE.ExtrudeGeometry(bankShape, { depth: 1.1, bevelEnabled: false }), MAT.earth);
+bank.rotation.x = -Math.PI / 2;
+bank.position.y = -1.1;
+bank.castShadow = true;
+bank.receiveShadow = true;
+scene.add(bank);
+
+const grassPlate = new THREE.Mesh(new THREE.ShapeGeometry(bankShape), MAT.grass);
+grassPlate.rotation.x = -Math.PI / 2;
+grassPlate.position.y = 0.002;
+grassPlate.receiveShadow = true;
+scene.add(grassPlate);
+
+const waterPts = circlePoints(0, 1.5, 1.4, 12, 0.03);
+const water = new THREE.Mesh(new THREE.ShapeGeometry(shapeFrom(waterPts)), MAT.water);
+water.rotation.x = -Math.PI / 2;
+water.position.y = -0.08;
+water.receiveShadow = true;
+scene.add(water);
+
+const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(4.4, 4.7, 0.12, 40), MAT.pedestal);
+pedestal.position.y = -1.17;
+pedestal.receiveShadow = true;
+scene.add(pedestal);
+
+const rockData = [
+  [0.95, -0.35, 0.16, MAT.rock],
+  [-1.25, -0.55, 0.13, MAT.rock2],
+  [1.75, 0.85, 0.19, MAT.rock3],
+  [-1.85, 0.75, 0.15, MAT.rock],
+  [1.35, 2.15, 0.12, MAT.rock2],
+  [-0.95, 2.55, 0.14, MAT.rock3],
+  [2.25, 1.75, 0.17, MAT.rock],
+  [-2.2, -0.3, 0.12, MAT.rock2]
+];
+for (const [x, z, s, m] of rockData) {
+  const r = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), m);
+  r.position.set(x, s * 0.42, z);
+  r.rotation.set(rng() * 3, rng() * 3, rng() * 3);
+  r.scale.y = 0.72;
+  r.castShadow = true;
+  r.receiveShadow = true;
+  scene.add(r);
+}
+
+const tuftMats = [MAT.grass2, MAT.grass3, MAT.grass];
+let tuftsPlaced = 0;
+let tuftGuard = 0;
+while (tuftsPlaced < 46 && tuftGuard < 700) {
+  tuftGuard++;
+  const a = rng() * Math.PI * 2;
+  const rr = 0.6 + rng() * 1.85;
+  const x = Math.cos(a) * rr;
+  const z = 0.4 + Math.sin(a) * rr;
+  if (Math.hypot(x, z - 1.5) < 1.62) continue;
+  if (Math.hypot(x, z) < 0.55) continue;
+  if (Math.hypot(x - 0.46, z - 0.02) < 0.3) continue;
+  const h = 0.06 + rng() * 0.1;
+  const r = 0.018 + rng() * 0.03;
+  const tuft = new THREE.Mesh(new THREE.ConeGeometry(r, h, 5), tuftMats[tuftsPlaced % 3]);
+  tuft.position.set(x, h / 2 - 0.008, z);
+  tuft.rotation.y = rng() * Math.PI;
+  tuft.rotation.x = (rng() - 0.5) * 0.2;
+  tuft.castShadow = true;
+  scene.add(tuft);
+  tuftsPlaced++;
+}
+
+for (const [cx, cz] of [[-1.15, 2.35], [1.35, 2.3], [1.7, 0.85]]) {
+  const n = 3 + Math.floor(rng() * 3);
+  for (let i = 0; i < n; i++) {
+    const h = 0.5 + rng() * 0.35;
+    const rg = new THREE.Group();
+    rg.position.set(cx + (rng() - 0.5) * 0.16, 0, cz + (rng() - 0.5) * 0.16);
+    rg.rotation.x = (rng() - 0.5) * 0.22;
+    rg.rotation.z = (rng() - 0.5) * 0.22;
+    scene.add(rg);
+    const reed = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.007, h, 5), MAT.reed);
+    reed.position.y = h / 2;
+    reed.castShadow = true;
+    rg.add(reed);
+    if (rng() < 0.55) {
+      const cattail = new THREE.Mesh(new THREE.CylinderGeometry(0.011, 0.011, 0.07, 6), MAT.cattail);
+      cattail.position.y = h + 0.025;
+      cattail.castShadow = true;
+      rg.add(cattail);
+    }
+  }
+}
+
+const bucket = new THREE.Group();
+bucket.position.set(0.46, 0, 0.02);
+bucket.rotation.y = -0.35;
+scene.add(bucket);
+cyl(bucket, 0.135, 0.108, 0.24, MAT.bucket, 0, 0.12, 0, 10);
+const bucketRim = new THREE.Mesh(new THREE.TorusGeometry(0.135, 0.011, 6, 14), MAT.bucket);
+bucketRim.position.set(0, 0.24, 0);
+bucketRim.rotation.x = Math.PI / 2;
+bucketRim.castShadow = true;
+bucket.add(bucketRim);
+cyl(bucket, 0.126, 0.126, 0.006, MAT.bucketWater, 0, 0.205, 0, 10);
+const bucketHandle = new THREE.Mesh(new THREE.TorusGeometry(0.125, 0.0075, 5, 14, Math.PI), MAT.bucket);
+bucketHandle.position.set(0, 0.245, 0);
+bucketHandle.rotation.y = 0.5;
+bucketHandle.castShadow = true;
+bucket.add(bucketHandle);
+
+const fisher = new THREE.Group();
+scene.add(fisher);
+
+const lower = new THREE.Group();
+fisher.add(lower);
+
+cyl(lower, 0.17, 0.155, 0.18, MAT.trouser, 0, 0.94, 0, 7).scale.z = 0.82;
+cyl(lower, 0.18, 0.18, 0.05, MAT.belt, 0, 1.005, 0, 7).scale.z = 0.82;
+box(lower, 0.055, 0.045, 0.02, MAT.buckle, 0, 1.005, 0.146);
+
+for (const side of [-1, 1]) {
+  const hip = new THREE.Vector3(side * 0.088, 0.9, 0.005);
+  const knee = new THREE.Vector3(side * 0.115, 0.6, 0.02);
+  const bootZ = side < 0 ? 0.07 : -0.02;
+  const ankle = new THREE.Vector3(side * 0.13, 0.17, bootZ - 0.005);
+  seg(lower, hip, knee, 0.084, 0.074, MAT.trouser);
+  sph(lower, 0.07, MAT.trouser, knee.x, knee.y, knee.z, 7, 5);
+  seg(lower, knee, ankle, 0.066, 0.05, MAT.trouser);
+
+  const boot = new THREE.Group();
+  boot.position.set(side * 0.13, 0, bootZ);
+  boot.rotation.y = side * 0.12;
+  lower.add(boot);
+  box(boot, 0.12, 0.032, 0.28, MAT.sole, 0, 0.016, 0.025);
+  box(boot, 0.105, 0.085, 0.25, MAT.boot, 0, 0.075, 0.03);
+  const toe = box(boot, 0.098, 0.07, 0.08, MAT.boot, 0, 0.062, 0.165);
+  toe.rotation.x = 0.12;
+  cyl(boot, 0.09, 0.073, 0.31, MAT.boot, 0, 0.3, -0.005, 8);
+  cyl(boot, 0.092, 0.092, 0.022, MAT.bootDark, 0, 0.446, -0.005, 8);
+  cyl(boot, 0.079, 0.079, 0.028, MAT.bootDark, 0, 0.155, 0, 8);
+}
+
+const upper = new THREE.Group();
+upper.position.set(0, 1.0, 0);
+fisher.add(upper);
+
+const chest = new THREE.Group();
+chest.position.set(0, 0.23, 0);
+upper.add(chest);
+
+cyl(chest, 0.2, 0.165, 0.44, MAT.shirt, 0, 0, 0, 7).scale.z = 0.78;
+
+const vest = cyl(chest, 0.225, 0.198, 0.4, MAT.vest, 0, 0.03, 0, 7, true, 0.62, Math.PI * 2 - 1.24);
+vest.scale.z = 0.8;
+
+const vestEdgeL = box(chest, 0.03, 0.4, 0.05, MAT.vestDark, 0.124, 0.03, 0.138);
+vestEdgeL.rotation.y = 0.62;
+const vestEdgeR = box(chest, 0.03, 0.4, 0.05, MAT.vestDark, -0.124, 0.03, 0.138);
+vestEdgeR.rotation.y = -0.62;
+
+const pocketL = box(chest, 0.078, 0.07, 0.026, MAT.vestDark, 0.118, -0.1, 0.152);
+pocketL.rotation.y = 0.3;
+const pocketR = box(chest, 0.078, 0.07, 0.026, MAT.vestDark, -0.118, -0.1, 0.152);
+pocketR.rotation.y = -0.3;
+
+const lureBox = box(chest, 0.06, 0.042, 0.028, MAT.vestDark, 0.13, 0.06, 0.147);
+lureBox.rotation.y = 0.3;
+
+const tool = cyl(chest, 0.008, 0.008, 0.09, MAT.crank, -0.15, 0.1, 0.115, 5);
+tool.rotation.z = 0.25;
+tool.rotation.x = 0.1;
+
+sph(chest, 0.078, MAT.shirt, 0.205, 0.165, 0.01);
+sph(chest, 0.078, MAT.shirt, -0.205, 0.165, 0.01);
+
+cyl(upper, 0.078, 0.09, 0.05, MAT.shirt, 0, 0.44, 0, 7);
+cyl(upper, 0.055, 0.06, 0.08, MAT.skin, 0, 0.425, 0, 7);
+
+const head = new THREE.Group();
+head.position.set(0, 0.44, 0.005);
+head.rotation.y = -0.24;
+head.rotation.x = -0.05;
+upper.add(head);
+
+const skull = sph(head, 0.125, MAT.skin, 0, 0.185, 0, 8, 6);
+skull.scale.set(0.95, 1.05, 1.0);
+
+box(head, 0.15, 0.09, 0.135, MAT.skin, 0, 0.09, 0.02);
+box(head, 0.075, 0.045, 0.05, MAT.skin, 0, 0.062, 0.085);
+
+const nose = addMesh(head, new THREE.ConeGeometry(0.022, 0.05, 4), MAT.skin, 0, 0.19, 0.132);
+nose.rotation.x = Math.PI / 2;
+
+for (const sx of [-1, 1]) {
+  const eyeWhite = sph(head, 0.023, MAT.eyeWhite, sx * 0.048, 0.222, 0.104, 7, 5);
+  eyeWhite.scale.z = 0.5;
+  sph(head, 0.009, MAT.pupil, sx * 0.048, 0.221, 0.119, 6, 4);
+  const brow = box(head, 0.055, 0.013, 0.018, MAT.beard, sx * 0.051, 0.258, 0.101);
+  brow.rotation.z = sx * 0.12;
+  brow.rotation.y = sx * 0.15;
+  const ear = sph(head, 0.03, MAT.skin, sx * 0.117, 0.185, 0, 6, 4);
+  ear.scale.set(0.45, 0.85, 0.7);
+}
+
+box(head, 0.085, 0.065, 0.05, MAT.beard, 0, 0.045, 0.082);
+box(head, 0.07, 0.04, 0.07, MAT.beard, 0, 0.03, 0.045);
+box(head, 0.08, 0.026, 0.028, MAT.beard, 0, 0.146, 0.108);
+
+for (const sx of [-1, 1]) {
+  const jaw = box(head, 0.03, 0.095, 0.1, MAT.beard, sx * 0.078, 0.098, 0.032);
+  jaw.rotation.y = sx * 0.15;
+  const cheek = box(head, 0.032, 0.055, 0.07, MAT.beard, sx * 0.068, 0.155, 0.052);
+  cheek.rotation.y = sx * 0.3;
+  cheek.rotation.z = sx * 0.1;
+  const sideburn = box(head, 0.024, 0.06, 0.05, MAT.beard, sx * 0.098, 0.132, 0.012);
+  sideburn.rotation.y = sx * 0.3;
+}
+
+const hat = new THREE.Group();
+hat.position.set(0, 0.322, -0.005);
+hat.rotation.x = -0.05;
+head.add(hat);
+
+cyl(hat, 0.23, 0.21, 0.02, MAT.hat, 0, 0.005, 0, 9);
+cyl(hat, 0.1, 0.14, 0.12, MAT.hat, 0, 0.075, 0, 7);
+const dome = addMesh(hat, new THREE.SphereGeometry(0.104, 7, 4, 0, Math.PI * 2, 0, Math.PI / 2), MAT.hat, 0, 0.135, 0);
+dome.scale.y = 0.5;
+cyl(hat, 0.134, 0.134, 0.034, MAT.hatBand, 0, 0.058, 0, 7, true);
+
+const hatLure = new THREE.Group();
+hatLure.position.set(-0.095, 0.058, 0.095);
+hat.add(hatLure);
+cyl(hatLure, 0.01, 0.01, 0.03, MAT.lureRed, 0, -0.012, 0, 6);
+sph(hatLure, 0.011, MAT.lureWhite, 0, 0.007, 0, 6, 4);
+const hook = new THREE.Mesh(new THREE.TorusGeometry(0.007, 0.0022, 4, 8, Math.PI), MAT.hook);
+hook.position.set(0, -0.032, 0);
+hook.rotation.z = Math.PI;
+hook.castShadow = true;
+hatLure.add(hook);
+
+const rodDir = new THREE.Vector3(-0.02, 0.795, 0.606).normalize();
+const rod = new THREE.Group();
+rod.position.set(-0.095, -0.127, 0.142);
+upper.add(rod);
+
+const zAxis = new THREE.Vector3(0, -1, 0).addScaledVector(rodDir, rodDir.y).normalize().negate();
+const xAxis = new THREE.Vector3().crossVectors(rodDir, zAxis).normalize();
+rod.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, rodDir, zAxis));
+
+cyl(rod, 0.034, 0.034, 0.05, MAT.rodHandle, 0, 0.025, 0, 8);
+cyl(rod, 0.028, 0.035, 0.36, MAT.rodHandle, 0, 0.24, 0, 8);
+cyl(rod, 0.03, 0.03, 0.016, MAT.rodSeat, 0, 0.418, 0, 8);
+cyl(rod, 0.027, 0.027, 0.085, MAT.rodSeat, 0, 0.462, 0, 8);
+cyl(rod, 0.029, 0.029, 0.015, MAT.rodGrip, 0, 0.507, 0, 8);
+cyl(rod, 0.026, 0.029, 0.09, MAT.rodGrip, 0, 0.565, 0, 8);
+cyl(rod, 0.013, 0.022, 1.24, MAT.rodBlank, 0, 1.22, 0, 7);
+
+const tipSeg = new THREE.Group();
+tipSeg.position.set(0, 1.84, 0);
+tipSeg.rotation.x = -0.16;
+rod.add(tipSeg);
+cyl(tipSeg, 0.005, 0.013, 0.5, MAT.rodBlank, 0, 0.25, 0, 6);
+const tipRing = new THREE.Mesh(new THREE.TorusGeometry(0.009, 0.0025, 4, 10), MAT.reel);
+tipRing.position.set(0, 0.5, 0.01);
+tipRing.rotation.x = Math.PI / 2;
+tipRing.castShadow = true;
+tipSeg.add(tipRing);
+const tipAnchor = new THREE.Object3D();
+tipAnchor.position.set(0, 0.5, 0.01);
+tipSeg.add(tipAnchor);
+
+const guideAnchors = [];
+for (const [gy, gr] of [[0.95, 0.017], [1.38, 0.015], [1.7, 0.013]]) {
+  const stem = cyl(rod, 0.0038, 0.0038, 0.02, MAT.reel, 0, gy, 0.016, 5);
+  stem.rotation.x = Math.PI / 2;
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(gr, 0.0032, 4, 10), MAT.reel);
+  ring.position.set(0, gy, 0.027);
+  ring.rotation.x = Math.PI / 2;
+  ring.castShadow = true;
+  rod.add(ring);
+  const anchor = new THREE.Object3D();
+  anchor.position.set(0, gy, 0.027);
+  rod.add(anchor);
+  guideAnchors.push(anchor);
+}
+
+const reelStem = cyl(rod, 0.011, 0.011, 0.036, MAT.reel, 0, 0.455, -0.033, 6);
+reelStem.rotation.x = Math.PI / 2;
+const reelBody = cyl(rod, 0.027, 0.027, 0.05, MAT.reel, 0, 0.455, -0.076, 8);
+reelBody.rotation.x = Math.PI / 2;
+const reelSpool = cyl(rod, 0.023, 0.023, 0.035, MAT.spool, 0, 0.455, -0.116, 8);
+reelSpool.rotation.x = Math.PI / 2;
+const spoolLip = cyl(rod, 0.0275, 0.0275, 0.006, MAT.spool, 0, 0.455, -0.133, 8);
+spoolLip.rotation.x = Math.PI / 2;
+const bail = new THREE.Mesh(new THREE.TorusGeometry(0.027, 0.0028, 4, 9, Math.PI * 1.35), MAT.crank);
+bail.position.set(0, 0.455, -0.138);
+bail.rotation.z = -Math.PI * 0.35;
+bail.castShadow = true;
+rod.add(bail);
+box(rod, 0.042, 0.007, 0.008, MAT.crank, -0.037, 0.455, -0.105);
+const crankKnob = cyl(rod, 0.008, 0.008, 0.02, MAT.crank, -0.058, 0.455, -0.112, 6);
+crankKnob.rotation.x = Math.PI / 2;
+const spoolAnchor = new THREE.Object3D();
+spoolAnchor.position.set(0, 0.455, -0.12);
+rod.add(spoolAnchor);
+
+function makeHand(sign) {
+  const hand = new THREE.Group();
+  const thetaP = sign < 0 ? Math.PI / 2 : -Math.PI / 2;
+  const wrap = new THREE.Mesh(new THREE.CylinderGeometry(0.041, 0.041, 0.085, 8, 1, true, thetaP + 0.35, Math.PI * 2 - 0.7), MAT.skinWrap);
+  wrap.castShadow = true;
+  hand.add(wrap);
+  box(hand, 0.034, 0.09, 0.058, MAT.skin, -sign * 0.044, 0, 0);
+  const thumb = box(hand, 0.028, 0.03, 0.052, MAT.skin, -sign * 0.016, 0.034, 0.03);
+  thumb.rotation.y = sign * 0.45;
+  thumb.rotation.x = -0.12;
+  return hand;
+}
+
+const rightHand = makeHand(-1);
+rightHand.position.set(0, 0.26, 0);
+rod.add(rightHand);
+const leftHand = makeHand(1);
+leftHand.position.set(0, 0.49, 0);
+rod.add(leftHand);
+
+scene.updateMatrixWorld(true);
+
+const S_r = new THREE.Vector3(-0.205, 0.395, 0.01);
+const S_l = new THREE.Vector3(0.205, 0.395, 0.01);
+const T_r = upper.worldToLocal(rightHand.getWorldPosition(new THREE.Vector3()));
+const T_l = upper.worldToLocal(leftHand.getWorldPosition(new THREE.Vector3()));
+
+function buildArm(S, T, poleDir) {
+  const E = solveElbow(S, T, 0.28, 0.29, poleDir);
+  const dirSE = E.clone().sub(S);
+  seg(upper, S.clone().addScaledVector(dirSE, 0.05), S.clone().addScaledVector(dirSE, 0.8), 0.072, 0.058, MAT.shirt);
+  seg(upper, S.clone().addScaledVector(dirSE, 0.78), S.clone().addScaledVector(dirSE, 0.95), 0.066, 0.062, MAT.shirt);
+  seg(upper, S.clone().addScaledVector(dirSE, 0.9), E, 0.048, 0.045, MAT.skin);
+  sph(upper, 0.048, MAT.skin, E.x, E.y, E.z, 7, 5);
+  const dirET = T.clone().sub(E);
+  const wrist = T.clone().addScaledVector(dirET, -0.02);
+  seg(upper, E, wrist, 0.047, 0.038, MAT.skin);
+  sph(upper, 0.041, MAT.skin, wrist.x, wrist.y, wrist.z, 7, 5);
+}
+
+buildArm(S_r, T_r, new THREE.Vector3(-0.9, -0.35, -0.55));
+buildArm(S_l, T_l, new THREE.Vector3(0.9, -0.3, -0.5));
+
+const floatGroup = new THREE.Group();
+floatGroup.position.set(-0.13, -0.045, 2.3);
+scene.add(floatGroup);
+cyl(floatGroup, 0.034, 0.012, 0.055, MAT.lureRed, 0, -0.02, 0, 8);
+cyl(floatGroup, 0.0345, 0.0345, 0.007, MAT.pupil, 0, 0.0085, 0, 8);
+cyl(floatGroup, 0.018, 0.034, 0.05, MAT.lureWhite, 0, 0.037, 0, 8);
+cyl(floatGroup, 0.007, 0.0055, 0.03, MAT.lureRed, 0, 0.075, 0, 6);
+const floatAnchor = new THREE.Object3D();
+floatAnchor.position.set(0, 0.01, 0);
+floatGroup.add(floatAnchor);
+
+const ripples = [];
+for (let i = 0; i < 3; i++) {
+  const rippleMat = new THREE.MeshBasicMaterial({ color: 0xcdeae4, transparent: true, opacity: 0.4, depthWrite: false, side: THREE.DoubleSide });
+  const ripple = new THREE.Mesh(new THREE.RingGeometry(0.87, 1.0, 18), rippleMat);
+  ripple.rotation.x = -Math.PI / 2;
+  ripple.position.set(-0.13, -0.072, 2.3);
+  scene.add(ripple);
+  ripples.push(ripple);
+}
+
+const lineAnchors = [spoolAnchor, ...guideAnchors, tipAnchor, floatAnchor];
+const lineGeo = new THREE.BufferGeometry();
+const linePositions = new Float32Array(lineAnchors.length * 3);
+lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0xf2efe4, transparent: true, opacity: 0.9 }));
+line.frustumCulled = false;
+scene.add(line);
+
+const tmpV = new THREE.Vector3();
+function updateLine() {
+  for (let i = 0; i < lineAnchors.length; i++) {
+    lineAnchors[i].getWorldPosition(tmpV);
+    linePositions[i * 3] = tmpV.x;
+    linePositions[i * 3 + 1] = tmpV.y;
+    linePositions[i * 3 + 2] = tmpV.z;
+  }
+  lineGeo.attributes.position.needsUpdate = true;
+}
+
+const clock = new THREE.Clock();
+
+function animate() {
+  const t = clock.getElapsedTime();
+  const breath = Math.sin(t * 1.5);
+
+  upper.rotation.x = 0.12 + 0.011 * Math.sin(t * 0.85) + 0.004 * breath;
+  upper.rotation.y = -0.05 + 0.008 * Math.sin(t * 0.6 + 1.2);
+  upper.position.y = 1.0 + 0.006 * breath;
+
+  head.rotation.y = -0.24 + 0.022 * Math.sin(t * 0.7 + 0.5);
+  head.rotation.x = -0.05 + 0.016 * Math.sin(t * 1.15);
+
+  chest.scale.set(1 + 0.005 * breath, 1 + 0.011 * breath, 1 + 0.006 * breath);
+
+  floatGroup.position.y = -0.045 + 0.013 * Math.sin(t * 2.1);
+  floatGroup.rotation.z = 0.06 * Math.sin(t * 1.6 + 0.7);
+  floatGroup.rotation.x = 0.05 * Math.sin(t * 1.3 + 2.1);
+
+  ripples.forEach((ring, i) => {
+    const phase = (t * 0.5 + i / 3) % 1;
+    const s = 0.07 + phase * 0.45;
+    ring.scale.set(s, s, 1);
+    ring.material.opacity = 0.45 * (1 - phase);
+  });
+
+  scene.updateMatrixWorld(true);
+  updateLine();
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,57 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - 'generic "Озеро: игровая сцена рыбалки" [ref=e4]'
+    - generic:
+      - generic [ref=e5]:
+        - generic [ref=e6]:
+          - generic [ref=e7]:
+            - text: Уровень
+            - generic [ref=e8]: "1"
+          - generic [ref=e9]:
+            - text: Деньги
+            - generic [ref=e10]: 640 ₽
+        - generic [ref=e12]:
+          - generic [ref=e13]: "Опыт: 0 · до 2 ур. ещё 140"
+          - generic [ref=e14]: "Забросов: 0"
+      - generic:
+        - generic [ref=e15]:
+          - generic [ref=e16]:
+            - text: Время
+            - generic [ref=e17]: 05:24
+          - generic [ref=e18]: Пасмурно
+        - generic:
+          - button "Наживка" [ref=e19] [cursor=pointer]
+          - button "Садок · 0" [ref=e20] [cursor=pointer]
+          - button "Магазин" [ref=e21] [cursor=pointer]
+          - button "Рекорды" [ref=e22] [cursor=pointer]
+          - button "Настройки" [ref=e23] [cursor=pointer]
+      - generic [ref=e24]:
+        - generic [ref=e26]:
+          - text: Червь
+          - generic [ref=e27]: "12"
+        - generic [ref=e28]: Бамбуковое удилище
+        - generic [ref=e29]: Леска 0,22 мм (3,5 кг) · обрыв при 3,5 кг
+        - generic [ref=e30]: "Садок на 6 рыбы: 0/6 · 0,00 кг"
+      - generic:
+        - generic: Готов к забросу
+        - generic [ref=e31]:
+          - generic [ref=e32]: Зажмите левую кнопку мыши — идёт набор силы
+          - generic [ref=e33]: Отпустите — последует заброс
+          - generic [ref=e34]: "Мышь: обзор и заброс · колесо: фрикцион · Esc: пауза"
+        - generic:
+          - button "Замах — держать" [ref=e35] [cursor=pointer]
+          - button "Снасти" [disabled] [ref=e36]
+          - button "◀" [ref=e37] [cursor=pointer]
+          - button "▶" [ref=e38] [cursor=pointer]
+      - generic [ref=e39]:
+        - generic [ref=e40]:
+          - generic [ref=e41]: Дальность
+          - generic [ref=e42]: —
+        - generic [ref=e43]:
+          - generic [ref=e44]: Фрикцион
+          - generic [ref=e45]:
+            - button "Ослабить фрикцион" [ref=e46] [cursor=pointer]: −
+            - text: 4/10
+            - button "Затянуть фрикцион" [ref=e47] [cursor=pointer]: +
+        - slider "Настройка фрикциона" [ref=e48]: "4"
+  - alert [ref=e49]

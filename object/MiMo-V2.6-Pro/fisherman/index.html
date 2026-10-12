@@ -1,0 +1,1113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Low-Poly Fisherman</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #b9c2bc;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Palette
+// ---------------------------------------------------------------------------
+const C = {
+  skin:       0xd7a06a,
+  skinDark:   0xc08a55,
+  beard:      0x8d7c6c,
+  beardDark:  0x6e6054,
+  eyeWhite:   0xf2ece0,
+  iris:       0x3a2c22,
+  brow:       0x6a5848,
+  hat:        0x6d7a4c,
+  hatDark:    0x4e5a34,
+  hatBand:    0x3e4729,
+  shirt:      0xc98e3c,
+  shirtDark:  0xa8722c,
+  vest:       0x5f6e3c,
+  vestDark:   0x46522c,
+  vestTrim:   0x3a4424,
+  trousers:   0x4b3826,
+  trousersHi: 0x5a442e,
+  boot:       0x2c2620,
+  bootDark:   0x1b1713,
+  bootCuff:   0x3a322a,
+  belt:       0x33261a,
+  buckle:     0xb59a5e,
+  rodBlank:   0x2a2c2e,
+  rodBlankHi: 0x3c4044,
+  grip:       0x1c1a18,
+  cork:       0xc9a978,
+  reel:       0x5a6068,
+  reelDark:   0x3c4248,
+  reelAccent: 0x8a9098,
+  lineCol:    0xf0efe6,
+  floatRed:   0xc43a34,
+  floatWhite: 0xf2efe6,
+  water:      0x3d7d7a,
+  waterDeep:  0x2f6462,
+  waterLight: 0x5c9a92,
+  earth:      0x8a6a48,
+  earthDark:  0x6e5236,
+  earthEdge:  0x5c4228,
+  grass:      0x5f8a3c,
+  grassDark:  0x47702c,
+  grassDry:   0x8a9a4a,
+  rock:       0x8a8478,
+  rockDark:   0x6e685c,
+  reed:       0x7a8a4a,
+  reedDark:   0x5c6a34,
+  bucket:     0x5a6470,
+  bucketDark: 0x424a54,
+  metal:      0x9aa0a8,
+  bg:         0xb9c2bc
+};
+
+// ---------------------------------------------------------------------------
+// Renderer / Scene / Camera
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(C.bg);
+scene.fog = new THREE.Fog(C.bg, 18, 42);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(6.3, 4.1, 8.1);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0.55, 1.95, 1.25);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 3.2;
+controls.maxDistance = 16;
+controls.minPolarAngle = 0.18;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Lights
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xdfe6e2, 0x7a6a4e, 0.62);
+scene.add(hemi);
+
+const sun = new THREE.DirectionalLight(0xfff0d8, 1.45);
+sun.position.set(7, 11, 5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 32;
+sun.shadow.camera.left = -8;
+sun.shadow.camera.right = 8;
+sun.shadow.camera.top = 9;
+sun.shadow.camera.bottom = -5;
+sun.shadow.bias = -0.0008;
+sun.shadow.normalBias = 0.02;
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0xc8d8e4, 0.38);
+fill.position.set(-6, 5, -4);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffe0b0, 0.22);
+rim.position.set(-3, 4, 7);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function mat(color, opts = {}) {
+  return new THREE.MeshStandardMaterial({
+    color,
+    flatShading: true,
+    roughness: 0.88,
+    metalness: 0.0,
+    ...opts
+  });
+}
+
+function mesh(geo, material, x = 0, y = 0, z = 0) {
+  const m = new THREE.Mesh(geo, material);
+  m.position.set(x, y, z);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+
+function box(w, h, d, material, x = 0, y = 0, z = 0) {
+  return mesh(new THREE.BoxGeometry(w, h, d), material, x, y, z);
+}
+
+function cyl(rTop, rBot, h, seg, material, x = 0, y = 0, z = 0) {
+  return mesh(new THREE.CylinderGeometry(rTop, rBot, h, seg), material, x, y, z);
+}
+
+function sphere(r, wSeg, hSeg, material, x = 0, y = 0, z = 0) {
+  return mesh(new THREE.SphereGeometry(r, wSeg, hSeg), material, x, y, z);
+}
+
+function cylinderBetween(a, b, rTop, rBot, seg, material) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  const m = mesh(new THREE.CylinderGeometry(rTop, rBot, len, seg), material);
+  m.position.copy(a).add(b).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  return m;
+}
+
+function taperedChain(points, radii, seg, material) {
+  const group = new THREE.Group();
+  for (let i = 0; i < points.length - 1; i++) {
+    group.add(cylinderBetween(points[i], points[i + 1], radii[i + 1], radii[i], seg, material));
+  }
+  return group;
+}
+
+// seeded random for stable scene dressing
+let _seed = 1337;
+function rand() {
+  _seed = (_seed * 16807) % 2147483647;
+  return (_seed - 1) / 2147483646;
+}
+function randRange(a, b) { return a + (b - a) * rand(); }
+
+// ---------------------------------------------------------------------------
+// Materials
+// ---------------------------------------------------------------------------
+const M = {
+  skin: mat(C.skin),
+  skinDark: mat(C.skinDark),
+  beard: mat(C.beard),
+  beardDark: mat(C.beardDark),
+  eyeWhite: mat(C.eyeWhite, { roughness: 0.55 }),
+  iris: mat(C.iris, { roughness: 0.5 }),
+  brow: mat(C.brow),
+  hat: mat(C.hat),
+  hatDark: mat(C.hatDark),
+  hatBand: mat(C.hatBand),
+  shirt: mat(C.shirt),
+  shirtDark: mat(C.shirtDark),
+  vest: mat(C.vest),
+  vestDark: mat(C.vestDark),
+  vestTrim: mat(C.vestTrim),
+  trousers: mat(C.trousers),
+  trousersHi: mat(C.trousersHi),
+  boot: mat(C.boot),
+  bootDark: mat(C.bootDark),
+  bootCuff: mat(C.bootCuff),
+  belt: mat(C.belt),
+  buckle: mat(C.buckle, { metalness: 0.55, roughness: 0.42 }),
+  rodBlank: mat(C.rodBlank, { roughness: 0.55, metalness: 0.12 }),
+  rodBlankHi: mat(C.rodBlankHi, { roughness: 0.5, metalness: 0.15 }),
+  grip: mat(C.grip, { roughness: 0.75 }),
+  cork: mat(C.cork),
+  reel: mat(C.reel, { metalness: 0.45, roughness: 0.42 }),
+  reelDark: mat(C.reelDark, { metalness: 0.4, roughness: 0.48 }),
+  reelAccent: mat(C.reelAccent, { metalness: 0.55, roughness: 0.35 }),
+  floatRed: mat(C.floatRed, { roughness: 0.55 }),
+  floatWhite: mat(C.floatWhite, { roughness: 0.55 }),
+  water: mat(C.water, { roughness: 0.42, metalness: 0.05 }),
+  waterDeep: mat(C.waterDeep, { roughness: 0.45 }),
+  waterLight: mat(C.waterLight, { roughness: 0.4 }),
+  earth: mat(C.earth),
+  earthDark: mat(C.earthDark),
+  earthEdge: mat(C.earthEdge),
+  grass: mat(C.grass),
+  grassDark: mat(C.grassDark),
+  grassDry: mat(C.grassDry),
+  rock: mat(C.rock),
+  rockDark: mat(C.rockDark),
+  reed: mat(C.reed),
+  reedDark: mat(C.reedDark),
+  bucket: mat(C.bucket, { metalness: 0.3, roughness: 0.55 }),
+  bucketDark: mat(C.bucketDark, { metalness: 0.3, roughness: 0.6 }),
+  metal: mat(C.metal, { metalness: 0.65, roughness: 0.35 })
+};
+
+const lineMat = new THREE.MeshBasicMaterial({ color: C.lineCol });
+const rippleMat = new THREE.MeshBasicMaterial({
+  color: 0xd8ece6,
+  transparent: true,
+  opacity: 0.35,
+  side: THREE.DoubleSide
+});
+
+// ---------------------------------------------------------------------------
+// Environment — riverbank diorama
+// ---------------------------------------------------------------------------
+const env = new THREE.Group();
+scene.add(env);
+
+// irregular earth patch with visible edge / thickness
+function buildGround() {
+  const shape = new THREE.Shape();
+  const pts = [
+    [-3.2, -2.4], [-2.0, -2.9], [-0.4, -2.7], [1.2, -2.4],
+    [2.6, -1.6], [3.2, -0.2], [3.0, 1.2], [2.3, 2.2],
+    [1.0, 2.6], [-0.6, 2.5], [-2.1, 2.0], [-3.0, 0.8], [-3.35, -1.0]
+  ];
+  shape.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.42,
+    bevelEnabled: true,
+    bevelThickness: 0.05,
+    bevelSize: 0.07,
+    bevelSegments: 1,
+    curveSegments: 1
+  });
+  geo.rotateX(Math.PI / 2);
+
+  const ground = new THREE.Mesh(geo, [M.earth, M.earthEdge]);
+  ground.position.y = -0.05;
+  ground.castShadow = true;
+  ground.receiveShadow = true;
+  env.add(ground);
+
+  // grass cap on the bank (reversed winding so the face points up)
+  const capShape = new THREE.Shape();
+  const capPts = pts.map(([x, z]) => [x * 0.965, z * 0.965]).reverse();
+  capShape.moveTo(capPts[0][0], capPts[0][1]);
+  for (let i = 1; i < capPts.length; i++) capShape.lineTo(capPts[i][0], capPts[i][1]);
+  capShape.closePath();
+  const capGeo = new THREE.ShapeGeometry(capShape, 1);
+  capGeo.rotateX(Math.PI / 2);
+  const capMat = new THREE.MeshStandardMaterial({
+    color: C.grass,
+    flatShading: true,
+    roughness: 0.92,
+    side: THREE.DoubleSide
+  });
+  const cap = new THREE.Mesh(capGeo, capMat);
+  cap.position.y = 0.012;
+  cap.receiveShadow = true;
+  env.add(cap);
+
+  // bare earth patch under the fisherman
+  const dirt = cyl(1.15, 1.25, 0.03, 9, M.earth, 0.1, 0.03, 0.25);
+  dirt.receiveShadow = true;
+  env.add(dirt);
+}
+buildGround();
+
+// water slab in front of the bank
+function buildWater() {
+  const group = new THREE.Group();
+  const main = box(14, 0.22, 11, M.water, 0, -0.16, 6.2);
+  main.receiveShadow = true;
+  main.castShadow = false;
+  group.add(main);
+
+  const deep = box(13, 0.02, 3.2, M.waterDeep, 0, -0.045, 3.4);
+  deep.receiveShadow = true;
+  group.add(deep);
+
+  const shallow = box(7.5, 0.02, 1.6, M.waterLight, 0.4, -0.035, 1.85);
+  shallow.receiveShadow = true;
+  group.add(shallow);
+
+  env.add(group);
+  return group;
+}
+buildWater();
+
+// rocks
+function buildRocks() {
+  const spots = [
+    [-1.9, 0, 1.55, 0.34],
+    [-2.45, 0, 0.85, 0.26],
+    [1.95, 0, -1.25, 0.38],
+    [2.45, 0, -0.75, 0.24],
+    [-0.95, 0, 2.15, 0.22],
+    [1.45, 0, 1.95, 0.28],
+    [-2.7, 0, -0.95, 0.3],
+    [2.6, 0, 1.15, 0.2]
+  ];
+  for (const [x, , z, s] of spots) {
+    const rock = mesh(new THREE.IcosahedronGeometry(s, 0), rand() > 0.5 ? M.rock : M.rockDark, x, s * 0.55, z);
+    rock.rotation.set(randRange(-0.4, 0.4), randRange(0, Math.PI), randRange(-0.4, 0.4));
+    rock.scale.set(1, randRange(0.65, 1.0), randRange(0.8, 1.2));
+    env.add(rock);
+  }
+}
+buildRocks();
+
+// grass clusters
+function buildGrass() {
+  const spots = [
+    [-1.35, 0.2], [-2.05, -1.4], [-0.6, -1.75], [1.05, -1.55],
+    [1.75, 0.35], [-1.55, 1.0], [0.15, -1.95], [2.2, -0.15],
+    [-2.35, 0.25], [0.75, 1.85], [-0.25, 2.05], [1.35, -0.85]
+  ];
+  for (const [x, z] of spots) {
+    const n = 3 + Math.floor(rand() * 3);
+    for (let i = 0; i < n; i++) {
+      const h = randRange(0.16, 0.34);
+      const blade = cyl(0.008, 0.035, h, 4, rand() > 0.35 ? M.grassDark : M.grassDry,
+        x + randRange(-0.16, 0.16), h * 0.5, z + randRange(-0.16, 0.16));
+      blade.rotation.z = randRange(-0.35, 0.35);
+      blade.rotation.x = randRange(-0.3, 0.3);
+      env.add(blade);
+    }
+  }
+}
+buildGrass();
+
+// reeds near the shoreline
+function buildReeds() {
+  const clusters = [
+    [-2.35, 1.85], [-1.75, 2.15], [1.85, 1.75], [2.35, 1.35], [0.15, 2.35]
+  ];
+  for (const [x, z] of clusters) {
+    const n = 3 + Math.floor(rand() * 3);
+    for (let i = 0; i < n; i++) {
+      const h = randRange(0.55, 0.95);
+      const bx = x + randRange(-0.18, 0.18);
+      const bz = z + randRange(-0.12, 0.12);
+      const lean = randRange(-0.16, 0.16);
+      const stalk = cyl(0.012, 0.022, h, 5, M.reed, bx, h * 0.5, bz);
+      stalk.rotation.z = lean;
+      stalk.rotation.x = randRange(-0.12, 0.12);
+      env.add(stalk);
+      const head = cyl(0.018, 0.03, 0.14, 5, M.reedDark,
+        bx + Math.sin(lean) * h * 0.5, h * 0.96, bz);
+      head.rotation.z = lean;
+      env.add(head);
+    }
+  }
+}
+buildReeds();
+
+// bucket beside the boots
+function buildBucket() {
+  const g = new THREE.Group();
+  g.position.set(-0.95, 0, 0.55);
+
+  const body = cyl(0.21, 0.175, 0.3, 10, M.bucket, 0, 0.16, 0);
+  g.add(body);
+  const bottom = cyl(0.175, 0.175, 0.03, 10, M.bucketDark, 0, 0.02, 0);
+  g.add(bottom);
+  const rim = mesh(new THREE.TorusGeometry(0.215, 0.018, 5, 12), M.bucketDark, 0, 0.315, 0);
+  rim.rotation.x = Math.PI / 2;
+  g.add(rim);
+  const inner = cyl(0.185, 0.185, 0.02, 10, M.bucketDark, 0, 0.29, 0);
+  g.add(inner);
+
+  const handle = mesh(new THREE.TorusGeometry(0.19, 0.014, 5, 10, Math.PI), M.metal, 0, 0.31, 0);
+  handle.rotation.y = Math.PI / 2;
+  handle.rotation.z = Math.PI;
+  handle.rotation.x = -0.15;
+  g.add(handle);
+
+  env.add(g);
+  return g;
+}
+buildBucket();
+
+// ---------------------------------------------------------------------------
+// Fisherman
+// ---------------------------------------------------------------------------
+const fisherman = new THREE.Group();
+fisherman.position.set(0, 0, 0);
+scene.add(fisherman);
+
+const hipsGroup = new THREE.Group();
+hipsGroup.position.set(0, 1.52, 0.02);
+fisherman.add(hipsGroup);
+
+const upperBody = new THREE.Group();
+upperBody.position.set(0, 0, 0);
+hipsGroup.add(upperBody);
+
+const headGroup = new THREE.Group();
+headGroup.position.set(0, 1.02, 0.02);
+headGroup.rotation.set(0.1, 0.38, 0.02);
+upperBody.add(headGroup);
+
+// equipment rig: arms + hands + rod share one pivot so they move together
+const armsPivot = new THREE.Group();
+armsPivot.position.set(0.15, 2.15, 0.35);
+fisherman.add(armsPivot);
+
+const armsRig = new THREE.Group();
+armsRig.position.set(-0.15, -2.15, -0.35);
+armsPivot.add(armsRig);
+
+// ----- boots & legs -------------------------------------------------------
+function buildBoot(x, z, rotY) {
+  const g = new THREE.Group();
+  g.position.set(x, 0, z);
+  g.rotation.y = rotY;
+
+  const sole = box(0.3, 0.1, 0.56, M.bootDark, 0, 0.05, 0.06);
+  g.add(sole);
+  const toe = sphere(0.15, 6, 4, M.boot, 0, 0.17, 0.28);
+  toe.scale.set(1, 0.72, 1.05);
+  g.add(toe);
+  const foot = box(0.27, 0.18, 0.42, M.boot, 0, 0.17, 0.06);
+  g.add(foot);
+  const shaft = cyl(0.155, 0.175, 0.32, 8, M.boot, 0, 0.38, -0.02);
+  g.add(shaft);
+  const cuff = cyl(0.185, 0.17, 0.09, 8, M.bootCuff, 0, 0.55, -0.02);
+  g.add(cuff);
+  const heel = box(0.22, 0.08, 0.12, M.bootDark, 0, 0.1, -0.18);
+  g.add(heel);
+
+  fisherman.add(g);
+  return g;
+}
+buildBoot(0.3, 0.2, 0.14);
+buildBoot(-0.3, -0.06, -0.1);
+
+function buildLeg(x, hipY, knee, ankle) {
+  const g = new THREE.Group();
+  const hip = new THREE.Vector3(x, hipY, 0.02);
+  g.add(cylinderBetween(hip, knee, 0.185, 0.155, 7, M.trousers));
+  const kneeBall = sphere(0.155, 6, 5, M.trousersHi, knee.x, knee.y, knee.z);
+  g.add(kneeBall);
+  g.add(cylinderBetween(knee, ankle, 0.15, 0.125, 7, M.trousers));
+  // thigh mass
+  const thigh = cylinderBetween(
+    new THREE.Vector3(x * 1.02, hipY + 0.16, 0.02),
+    new THREE.Vector3(x * 1.05, hipY - 0.28, 0.04),
+    0.22, 0.19, 7, M.trousersHi
+  );
+  g.add(thigh);
+  fisherman.add(g);
+  return g;
+}
+buildLeg(0.27, 1.48, new THREE.Vector3(0.31, 0.88, 0.14), new THREE.Vector3(0.29, 0.5, 0.18));
+buildLeg(-0.27, 1.48, new THREE.Vector3(-0.3, 0.88, -0.02), new THREE.Vector3(-0.28, 0.5, -0.06));
+
+// ----- pelvis / belt ------------------------------------------------------
+const pelvis = cyl(0.36, 0.32, 0.32, 8, M.trousers, 0, -0.08, 0.02);
+hipsGroup.add(pelvis);
+
+const belt = cyl(0.375, 0.365, 0.1, 8, M.belt, 0, 0.1, 0.02);
+hipsGroup.add(belt);
+const buckle = box(0.12, 0.1, 0.05, M.buckle, 0, 0.1, 0.38);
+hipsGroup.add(buckle);
+
+// ----- torso --------------------------------------------------------------
+const torsoGroup = new THREE.Group();
+upperBody.add(torsoGroup);
+
+const torso = cyl(0.42, 0.345, 0.92, 8, M.shirt, 0, 0.56, 0.02);
+torsoGroup.add(torso);
+const chest = cyl(0.4, 0.42, 0.34, 8, M.shirt, 0, 0.86, 0.02);
+torsoGroup.add(chest);
+const shoulderMass = box(0.92, 0.22, 0.46, M.shirt, 0, 0.96, 0.02);
+shoulderMass.scale.set(1, 1, 0.95);
+torsoGroup.add(shoulderMass);
+const neck = cyl(0.135, 0.16, 0.2, 7, M.skinDark, 0, 1.06, 0.04);
+torsoGroup.add(neck);
+
+// collar
+const collar = cyl(0.19, 0.17, 0.08, 7, M.shirtDark, 0, 1.0, 0.04);
+torsoGroup.add(collar);
+
+// ----- vest ---------------------------------------------------------------
+function buildVest() {
+  const g = new THREE.Group();
+
+  // back panel
+  const back = box(0.78, 0.78, 0.1, M.vestDark, 0, 0.58, -0.36);
+  g.add(back);
+  // left front panel (opens outward slightly)
+  const lp = box(0.3, 0.78, 0.11, M.vest, -0.22, 0.58, 0.34);
+  lp.rotation.y = 0.18;
+  lp.rotation.x = -0.05;
+  g.add(lp);
+  // right front panel
+  const rp = box(0.3, 0.78, 0.11, M.vest, 0.22, 0.58, 0.34);
+  rp.rotation.y = -0.18;
+  rp.rotation.x = -0.05;
+  g.add(rp);
+  // side panels
+  const lside = box(0.1, 0.72, 0.5, M.vestDark, -0.42, 0.58, 0.02);
+  g.add(lside);
+  const rside = box(0.1, 0.72, 0.5, M.vestDark, 0.42, 0.58, 0.02);
+  g.add(rside);
+  // shoulder yokes
+  const ly = box(0.3, 0.12, 0.46, M.vest, -0.28, 0.95, 0.02);
+  ly.rotation.z = 0.12;
+  g.add(ly);
+  const ry = box(0.3, 0.12, 0.46, M.vest, 0.28, 0.95, 0.02);
+  ry.rotation.z = -0.12;
+  g.add(ry);
+
+  // pockets
+  const p1 = box(0.17, 0.16, 0.06, M.vestTrim, -0.22, 0.42, 0.42);
+  p1.rotation.y = 0.18;
+  g.add(p1);
+  const p2 = box(0.17, 0.16, 0.06, M.vestTrim, 0.22, 0.42, 0.42);
+  p2.rotation.y = -0.18;
+  g.add(p2);
+  const p3 = box(0.16, 0.14, 0.055, M.vestTrim, -0.22, 0.68, 0.425);
+  p3.rotation.y = 0.18;
+  g.add(p3);
+  const p4 = box(0.15, 0.13, 0.055, M.vestTrim, 0.23, 0.7, 0.42);
+  p4.rotation.y = -0.18;
+  g.add(p4);
+  // small equipment details
+  const tool = box(0.045, 0.16, 0.03, M.metal, 0.08, 0.55, 0.42);
+  tool.rotation.y = -0.18;
+  g.add(tool);
+  const fly = cyl(0.03, 0.03, 0.05, 5, M.floatRed, -0.08, 0.55, 0.43);
+  fly.rotation.x = Math.PI / 2;
+  g.add(fly);
+  const clip = box(0.07, 0.05, 0.025, M.metal, -0.3, 0.28, 0.4);
+  clip.rotation.y = 0.18;
+  g.add(clip);
+
+  // zipper seam lines
+  const seam = box(0.03, 0.74, 0.03, M.vestTrim, 0.0, 0.58, 0.4);
+  g.add(seam);
+
+  torsoGroup.add(g);
+}
+buildVest();
+
+// ----- head ---------------------------------------------------------------
+function buildHead() {
+  const g = headGroup;
+
+  const skull = sphere(0.36, 7, 6, M.skin, 0, 0.16, 0.02);
+  skull.scale.set(1.0, 1.14, 0.96);
+  g.add(skull);
+
+  // jaw / chin
+  const jaw = box(0.34, 0.2, 0.3, M.skin, 0, -0.06, 0.08);
+  g.add(jaw);
+  const chin = box(0.2, 0.12, 0.16, M.skin, 0, -0.14, 0.2);
+  g.add(chin);
+
+  // cheeks
+  const cheekL = box(0.12, 0.14, 0.12, M.skinDark, -0.27, 0.06, 0.14);
+  cheekL.rotation.y = 0.35;
+  g.add(cheekL);
+  const cheekR = box(0.12, 0.14, 0.12, M.skinDark, 0.27, 0.06, 0.14);
+  cheekR.rotation.y = -0.35;
+  g.add(cheekR);
+
+  // nose
+  const nose = box(0.1, 0.14, 0.12, M.skinDark, 0, 0.1, 0.34);
+  nose.rotation.x = -0.25;
+  g.add(nose);
+  const noseTip = sphere(0.055, 5, 4, M.skinDark, 0, 0.04, 0.38);
+  g.add(noseTip);
+
+  // eyes
+  function eye(sx) {
+    const white = sphere(0.085, 6, 5, M.eyeWhite, sx, 0.2, 0.3);
+    white.scale.set(1, 1.05, 0.7);
+    g.add(white);
+    const iris = sphere(0.042, 6, 5, M.iris, sx * 1.02, 0.195, 0.365);
+    g.add(iris);
+    const glint = sphere(0.014, 4, 3, M.eyeWhite, sx * 1.02 + 0.015, 0.215, 0.395);
+    g.add(glint);
+  }
+  eye(-0.135);
+  eye(0.135);
+
+  // eyebrows — slight content arch
+  const browL = box(0.16, 0.035, 0.05, M.brow, -0.14, 0.305, 0.3);
+  browL.rotation.z = -0.16;
+  browL.rotation.y = 0.25;
+  g.add(browL);
+  const browR = box(0.16, 0.035, 0.05, M.brow, 0.14, 0.305, 0.3);
+  browR.rotation.z = 0.16;
+  browR.rotation.y = -0.25;
+  g.add(browR);
+
+  // subtle mouth
+  const mouth = box(0.14, 0.025, 0.03, M.beardDark, 0, -0.07, 0.33);
+  mouth.rotation.x = -0.15;
+  g.add(mouth);
+
+  // ears
+  const earL = sphere(0.075, 5, 4, M.skinDark, -0.355, 0.12, -0.02);
+  earL.scale.set(0.55, 1, 0.75);
+  g.add(earL);
+  const earR = sphere(0.075, 5, 4, M.skinDark, 0.355, 0.12, -0.02);
+  earR.scale.set(0.55, 1, 0.75);
+  g.add(earR);
+
+  // beard — angular masses along jaw and chin
+  const beardBits = [
+    [0, -0.18, 0.22, 0.22, 0.14, 0.16, 0],
+    [-0.16, -0.12, 0.2, 0.16, 0.13, 0.13, 0.3],
+    [0.16, -0.12, 0.2, 0.16, 0.13, 0.13, -0.3],
+    [-0.27, -0.02, 0.12, 0.13, 0.14, 0.12, 0.5],
+    [0.27, -0.02, 0.12, 0.13, 0.14, 0.12, -0.5],
+    [-0.3, 0.08, 0.0, 0.11, 0.13, 0.11, 0.7],
+    [0.3, 0.08, 0.0, 0.11, 0.13, 0.11, -0.7],
+    [0, -0.12, 0.3, 0.12, 0.1, 0.08, 0]
+  ];
+  for (const [x, y, z, w, h, d, ry] of beardBits) {
+    const b = box(w, h, d, rand() > 0.4 ? M.beard : M.beardDark, x, y, z);
+    b.rotation.y = ry;
+    b.rotation.x = randRange(-0.25, 0.1);
+    g.add(b);
+  }
+  // moustache
+  const mustL = box(0.11, 0.035, 0.05, M.beard, -0.075, -0.035, 0.32);
+  mustL.rotation.z = 0.25;
+  g.add(mustL);
+  const mustR = box(0.11, 0.035, 0.05, M.beard, 0.075, -0.035, 0.32);
+  mustR.rotation.z = -0.25;
+  g.add(mustR);
+}
+buildHead();
+
+// ----- hat ----------------------------------------------------------------
+function buildHat() {
+  const g = new THREE.Group();
+  g.position.set(0, 0.46, -0.01);
+  g.rotation.set(-0.08, 0, 0.04);
+  headGroup.add(g);
+
+  const crown = cyl(0.3, 0.345, 0.26, 8, M.hat, 0, 0.12, 0);
+  crown.scale.z = 1.02;
+  g.add(crown);
+  const crownTop = cyl(0.26, 0.3, 0.08, 8, M.hatDark, 0, 0.28, 0);
+  g.add(crownTop);
+
+  const brim = cyl(0.52, 0.5, 0.045, 10, M.hat, 0, 0.0, 0.01);
+  brim.scale.z = 1.12;
+  brim.rotation.x = -0.12;
+  g.add(brim);
+  const brimUnder = cyl(0.5, 0.48, 0.03, 10, M.hatDark, 0, -0.03, 0.01);
+  brimUnder.scale.z = 1.12;
+  brimUnder.rotation.x = -0.12;
+  g.add(brimUnder);
+
+  const band = cyl(0.35, 0.355, 0.075, 8, M.hatBand, 0, 0.06, 0);
+  g.add(band);
+
+  // fishing lure clipped to the hatband
+  const lure = new THREE.Group();
+  lure.position.set(0.32, 0.06, 0.18);
+  lure.rotation.set(0.3, 0, -0.5);
+  const lureBody = cyl(0.022, 0.028, 0.1, 5, M.floatRed, 0, 0, 0);
+  lure.add(lureBody);
+  const lureHead = sphere(0.032, 5, 4, M.floatWhite, 0, 0.06, 0);
+  lure.add(lureHead);
+  const hook = mesh(new THREE.TorusGeometry(0.035, 0.008, 4, 8, Math.PI * 1.2), M.metal, 0, -0.08, 0);
+  hook.rotation.x = Math.PI / 2;
+  lure.add(hook);
+  g.add(lure);
+}
+buildHat();
+
+// ----- arms ---------------------------------------------------------------
+const skinMat = M.skin;
+
+function buildArm(shoulder, elbow, wrist, side) {
+  const g = new THREE.Group();
+  const s = side; // 'L' or 'R'
+
+  // deltoid
+  const delt = sphere(0.175, 6, 5, M.shirt, shoulder.x, shoulder.y, shoulder.z);
+  delt.scale.set(1, 1.15, 1);
+  g.add(delt);
+
+  // upper arm (shirt)
+  g.add(cylinderBetween(shoulder, elbow, 0.135, 0.115, 7, M.shirt));
+
+  // rolled sleeve cuff
+  const cuffMid = new THREE.Vector3().lerpVectors(shoulder, elbow, 0.72);
+  const cuffDir = new THREE.Vector3().subVectors(elbow, shoulder).normalize();
+  const cuff = cylinderBetween(
+    cuffMid.clone().addScaledVector(cuffDir, -0.06),
+    cuffMid.clone().addScaledVector(cuffDir, 0.1),
+    0.135, 0.135, 7, M.shirtDark
+  );
+  g.add(cuff);
+
+  // elbow
+  const elbowBall = sphere(0.115, 6, 5, M.skin, elbow.x, elbow.y, elbow.z);
+  g.add(elbowBall);
+
+  // forearm (bare skin)
+  g.add(cylinderBetween(elbow, wrist, 0.105, 0.085, 7, skinMat));
+
+  // wrist
+  const wristBall = sphere(0.085, 6, 5, skinMat, wrist.x, wrist.y, wrist.z);
+  g.add(wristBall);
+
+  armsRig.add(g);
+  return g;
+}
+
+const shoulderR = new THREE.Vector3(0.52, 2.32, 0.08);
+const elbowR = new THREE.Vector3(0.95, 1.86, -0.02);
+const wristR = new THREE.Vector3(0.42, 1.78, 0.36);
+
+const shoulderL = new THREE.Vector3(-0.52, 2.32, 0.08);
+const elbowL = new THREE.Vector3(-0.42, 2.02, 0.52);
+const wristL = new THREE.Vector3(0.38, 2.16, 0.72);
+
+buildArm(shoulderR, elbowR, wristR, 'R');
+buildArm(shoulderL, elbowL, wristL, 'L');
+
+// ---------------------------------------------------------------------------
+// Fishing rod (built in body space so hands can be placed exactly on it)
+// ---------------------------------------------------------------------------
+const rodGroup = new THREE.Group();
+armsRig.add(rodGroup);
+
+const rodCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0.18, 1.42, 0.22),
+  new THREE.Vector3(0.30, 1.80, 0.42),
+  new THREE.Vector3(0.46, 2.18, 0.70),
+  new THREE.Vector3(0.72, 2.78, 1.12),
+  new THREE.Vector3(1.02, 3.42, 1.72),
+  new THREE.Vector3(1.28, 3.96, 2.26),
+  new THREE.Vector3(1.42, 4.32, 2.68),
+  new THREE.Vector3(1.48, 4.52, 2.98)
+]);
+
+const rodPts = rodCurve.getPoints(14);
+const rodRadii = [];
+for (let i = 0; i < rodPts.length; i++) {
+  const t = i / (rodPts.length - 1);
+  // butt section thicker, tapering to a fine tip
+  const r = 0.052 * Math.pow(1 - t, 1.35) + 0.011;
+  rodRadii.push(r);
+}
+
+// handle (grip) at the lower end
+const buttPt = rodPts[0];
+const gripEnd = rodPts[3];
+const gripDir = new THREE.Vector3().subVectors(gripEnd, buttPt).normalize();
+
+const handle = cylinderBetween(
+  buttPt.clone().addScaledVector(gripDir, -0.06),
+  buttPt.clone().addScaledVector(gripDir, 0.52),
+  0.058, 0.062, 8, M.grip
+);
+rodGroup.add(handle);
+
+const endCap = cylinderBetween(
+  buttPt.clone().addScaledVector(gripDir, -0.12),
+  buttPt.clone().addScaledVector(gripDir, -0.05),
+  0.05, 0.058, 8, M.reelDark
+);
+rodGroup.add(endCap);
+
+const corkGrip = cylinderBetween(
+  buttPt.clone().addScaledVector(gripDir, 0.2),
+  buttPt.clone().addScaledVector(gripDir, 0.5),
+  0.056, 0.054, 8, M.cork
+);
+rodGroup.add(corkGrip);
+
+const reelSeat = cylinderBetween(
+  buttPt.clone().addScaledVector(gripDir, 0.5),
+  buttPt.clone().addScaledVector(gripDir, 0.72),
+  0.05, 0.048, 8, M.reelDark
+);
+rodGroup.add(reelSeat);
+
+// rod blank
+const blank = taperedChain(rodPts.slice(2), rodRadii.slice(2), 7, M.rodBlank);
+rodGroup.add(blank);
+
+// slight highlight wrap on the lower blank
+const wrap = cylinderBetween(rodPts[3], rodPts[5], 0.045, 0.038, 7, M.rodBlankHi);
+rodGroup.add(wrap);
+
+// guides (line guides) along the underside of the blank
+const rodDirGlobal = new THREE.Vector3().subVectors(rodPts[rodPts.length - 1], rodPts[2]).normalize();
+const guideOffset = new THREE.Vector3(0, -1, 0)
+  .addScaledVector(rodDirGlobal, rodDirGlobal.y)
+  .normalize()
+  .multiplyScalar(0.055);
+
+const guideTs = [0.22, 0.36, 0.5, 0.63, 0.75, 0.86, 0.94, 0.99];
+const guidePositions = [];
+for (const t of guideTs) {
+  const p = rodCurve.getPoint(t).clone().add(guideOffset);
+  guidePositions.push(p);
+  const frame = rodCurve.getTangent(t);
+  const ring = mesh(new THREE.TorusGeometry(0.028, 0.008, 4, 8), M.reelAccent);
+  ring.position.copy(p);
+  ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), frame.clone().normalize());
+  rodGroup.add(ring);
+  const foot = cylinderBetween(
+    rodCurve.getPoint(t).clone().addScaledVector(guideOffset, 0.15),
+    p,
+    0.012, 0.012, 5, M.reelDark
+  );
+  rodGroup.add(foot);
+}
+
+const rodTip = rodCurve.getPoint(1).clone();
+
+// ----- reel ---------------------------------------------------------------
+function buildReel() {
+  const g = new THREE.Group();
+  const seat = rodCurve.getPoint(0.22).clone();
+
+  // hang the reel downward from the rod axis
+  const hang = new THREE.Vector3(0.18, -1, 0.32).normalize().multiplyScalar(0.2);
+  g.position.copy(seat).add(hang);
+
+  // orient so the spool axis is roughly horizontal, facing forward-right
+  g.rotation.set(0.35, -0.55, 0.15);
+
+  const stem = box(0.05, 0.16, 0.05, M.reelDark, 0, 0.09, 0);
+  g.add(stem);
+
+  const body = sphere(0.135, 7, 6, M.reel, 0, -0.05, 0);
+  body.scale.set(1.05, 0.85, 0.9);
+  g.add(body);
+
+  const spool = cyl(0.105, 0.105, 0.11, 10, M.reelAccent, 0, -0.05, 0.14);
+  spool.rotation.x = Math.PI / 2;
+  g.add(spool);
+
+  const spoolCap = cyl(0.075, 0.075, 0.03, 8, M.reelDark, 0, -0.05, 0.21);
+  spoolCap.rotation.x = Math.PI / 2;
+  g.add(spoolCap);
+
+  const skirt = cyl(0.115, 0.095, 0.05, 8, M.reelDark, 0, -0.05, 0.07);
+  skirt.rotation.x = Math.PI / 2;
+  g.add(skirt);
+
+  // bail arm
+  const bail = mesh(new THREE.TorusGeometry(0.13, 0.012, 4, 10, Math.PI), M.metal, 0, -0.05, 0.12);
+  bail.rotation.x = Math.PI / 2;
+  bail.rotation.z = 0.6;
+  g.add(bail);
+
+  // crank handle
+  const crankArm = box(0.04, 0.04, 0.17, M.reelDark, -0.16, -0.05, 0);
+  g.add(crankArm);
+  const crankKnob = cyl(0.035, 0.035, 0.08, 6, M.grip, -0.16, -0.05, -0.11);
+  crankKnob.rotation.x = Math.PI / 2;
+  g.add(crankKnob);
+
+  rodGroup.add(g);
+  return g;
+}
+const reelGroup = buildReel();
+
+// anchor on the spool so the fishing line starts in the right place
+const spoolAnchor = new THREE.Object3D();
+spoolAnchor.position.set(0, -0.05, 0.22);
+reelGroup.add(spoolAnchor);
+
+// ----- hands gripping the rod ---------------------------------------------
+function buildGripHand(position, dir, thumbSide) {
+  const g = new THREE.Group();
+  g.position.copy(position);
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+
+  // palm wrapping the handle
+  const palm = box(0.155, 0.2, 0.135, M.skin, 0, 0, thumbSide * 0.055);
+  g.add(palm);
+
+  const knuckle = sphere(0.09, 6, 5, M.skinDark, 0, 0.04, thumbSide * 0.1);
+  knuckle.scale.set(1.1, 0.8, 0.7);
+  g.add(knuckle);
+
+  // fingers curling around the blank
+  for (let i = 0; i < 4; i++) {
+    const f = box(0.05, 0.115, 0.045, M.skin, 0, -0.065 + i * 0.052, -thumbSide * (0.075 - i * 0.008));
+    f.rotation.x = thumbSide * 0.55;
+    f.rotation.y = thumbSide * 0.15;
+    g.add(f);
+  }
+
+  // thumb
+  const thumb = box(0.055, 0.115, 0.05, M.skin, thumbSide * 0.09, 0.02, 0.03);
+  thumb.rotation.z = -thumbSide * 0.85;
+  thumb.rotation.x = -thumbSide * 0.35;
+  g.add(thumb);
+
+  armsRig.add(g);
+  return g;
+}
+
+const handDir = new THREE.Vector3().subVectors(rodPts[6], rodPts[1]).normalize();
+buildGripHand(new THREE.Vector3(0.34, 1.76, 0.44), handDir, 1);   // right hand on the handle
+buildGripHand(new THREE.Vector3(0.44, 2.14, 0.68), handDir, -1);  // left hand near the reel
+
+// ---------------------------------------------------------------------------
+// Fishing line, float, ripples
+// ---------------------------------------------------------------------------
+const floatPos = new THREE.Vector3(2.35, -0.02, 3.45);
+
+function buildFloat() {
+  const g = new THREE.Group();
+  g.position.copy(floatPos);
+
+  const body = sphere(0.09, 7, 5, M.floatWhite, 0, 0.05, 0);
+  body.scale.set(1, 1.5, 1);
+  g.add(body);
+
+  const top = sphere(0.085, 7, 5, M.floatRed, 0, 0.13, 0);
+  top.scale.set(1, 1.15, 1);
+  g.add(top);
+
+  const tip = cyl(0.012, 0.028, 0.1, 5, M.floatWhite, 0, 0.24, 0);
+  g.add(tip);
+  const antenna = cyl(0.008, 0.012, 0.09, 5, M.floatRed, 0, 0.32, 0);
+  g.add(antenna);
+
+  const keel = cyl(0.03, 0.055, 0.1, 6, M.floatRed, 0, -0.05, 0);
+  g.add(keel);
+
+  scene.add(g);
+  return g;
+}
+const floatGroup = buildFloat();
+
+// fishing line: from the reel spool, through the guides, down to the float
+const lineGroup = new THREE.Group();
+scene.add(lineGroup);
+
+function buildLine() {
+  scene.updateMatrixWorld(true);
+  const spoolWorld = new THREE.Vector3();
+  spoolAnchor.getWorldPosition(spoolWorld);
+
+  const tipWorld = new THREE.Vector3();
+  tipWorld.copy(rodTip).add(guideOffset.clone().multiplyScalar(0.6));
+  armsRig.localToWorld(tipWorld);
+
+  const pts = [spoolWorld];
+  for (let i = 0; i < guidePositions.length; i++) {
+    pts.push(guidePositions[i].clone());
+  }
+  pts.push(tipWorld);
+
+  // descend from the tip to the float with a gentle sag
+  const mid = new THREE.Vector3().lerpVectors(tipWorld, floatPos, 0.55);
+  mid.y += 0.12;
+  mid.x += 0.12;
+  pts.push(mid);
+  pts.push(floatPos.clone().add(new THREE.Vector3(0, 0.18, 0)));
+
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.35);
+  const tube = new THREE.TubeGeometry(curve, 64, 0.011, 5, false);
+  const lineMesh = new THREE.Mesh(tube, lineMat);
+  lineGroup.add(lineMesh);
+}
+buildLine();
+
+// expanding ripples around the float
+const ripples = [];
+function buildRipples() {
+  for (let i = 0; i < 3; i++) {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.12, 0.17, 22),
+      rippleMat.clone()
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(floatPos.x, -0.045, floatPos.z);
+    ring.userData.phase = i / 3;
+    scene.add(ring);
+    ripples.push(ring);
+  }
+}
+buildRipples();
+
+// ---------------------------------------------------------------------------
+// Animation
+// ---------------------------------------------------------------------------
+const clock = new THREE.Clock();
+const baseUpperRotX = 0.075;
+const baseUpperRotY = 0.12;
+
+upperBody.rotation.x = baseUpperRotX;
+upperBody.rotation.y = baseUpperRotY;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // gentle breathing in the torso
+  const breath = Math.sin(t * 1.05);
+  upperBody.rotation.x = baseUpperRotX + breath * 0.012;
+  torsoGroup.scale.y = 1 + breath * 0.01;
+  torsoGroup.scale.x = 1 + breath * 0.006;
+
+  // very slight coordinated movement of arms + rod (shared pivot keeps hands attached)
+  const sway = Math.sin(t * 0.72) * 0.01 + Math.sin(t * 1.6) * 0.004;
+  armsPivot.rotation.y = sway;
+  armsPivot.rotation.z = Math.sin(t * 0.55) * 0.006;
+  armsPivot.rotation.x = Math.sin(t * 0.9) * 0.004;
+
+  // head follows a subtle idle drift toward the line
+  headGroup.rotation.y = 0.38 + Math.sin(t * 0.45) * 0.018;
+  headGroup.rotation.x = 0.1 + Math.sin(t * 0.6) * 0.01;
+
+  // float bobbing
+  const bob = Math.sin(t * 1.4) * 0.025 + Math.sin(t * 2.1) * 0.012;
+  floatGroup.position.y = floatPos.y + bob;
+  floatGroup.position.x = floatPos.x + Math.sin(t * 0.9) * 0.012;
+  floatGroup.position.z = floatPos.z + Math.cos(t * 0.75) * 0.012;
+  floatGroup.rotation.z = Math.sin(t * 1.1) * 0.07;
+  floatGroup.rotation.x = Math.cos(t * 0.85) * 0.06;
+
+  // ripples
+  for (const ring of ripples) {
+    const phase = (t * 0.28 + ring.userData.phase) % 1;
+    const scale = 0.55 + phase * 2.4;
+    ring.scale.set(scale, scale, scale);
+    ring.material.opacity = 0.32 * (1 - phase) * (1 - phase);
+    ring.position.x = floatGroup.position.x;
+    ring.position.z = floatGroup.position.z;
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+</script>
+
+</body>
+</html>

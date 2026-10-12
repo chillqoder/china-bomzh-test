@@ -1,0 +1,1186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Japanese Garden Pond</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #e4e7db; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const rand = (a, b) => a + Math.random() * (b - a);
+const wrapAngle = a => Math.atan2(Math.sin(a), Math.cos(a));
+const smoothstep = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+const hash1 = x => { const s = Math.sin(x * 12.9898) * 43758.5453; return s - Math.floor(s); };
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xe4e7db);
+scene.fog = new THREE.Fog(0xe4e7db, 38, 88);
+
+const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.1, 240);
+camera.position.set(11.8, 9.8, 12.2);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.3, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.enablePan = false;
+controls.minDistance = 6;
+controls.maxDistance = 46;
+controls.minPolarAngle = 0.12;
+controls.maxPolarAngle = 1.42;
+controls.rotateSpeed = 0.75;
+controls.zoomSpeed = 0.8;
+
+scene.add(new THREE.HemisphereLight(0xd6e6ee, 0x5c6647, 0.85));
+const sun = new THREE.DirectionalLight(0xffe0b0, 2.1);
+sun.position.set(15, 19, 9);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -14;
+sun.shadow.camera.right = 14;
+sun.shadow.camera.top = 14;
+sun.shadow.camera.bottom = -14;
+sun.shadow.camera.near = 5;
+sun.shadow.camera.far = 55;
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.03;
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0xbcd4e2, 0.55);
+fill.position.set(-11, 9, -13);
+scene.add(fill);
+
+const R0 = 6;
+const INLET_T = 3.75;
+const INLET_SIG = 0.13;
+const POND_DEPTH = 1.5;
+
+function gaussWrap(a, c, s) {
+  const d = wrapAngle(a - c);
+  return Math.exp(-(d * d) / (2 * s * s));
+}
+function pondRadius(th) {
+  return R0 * (1
+    + 0.09 * Math.sin(2 * th + 0.7)
+    + 0.05 * Math.sin(3 * th + 2.1)
+    + 0.035 * Math.sin(5 * th + 4.4)
+    + 0.32 * gaussWrap(th, INLET_T, INLET_SIG));
+}
+function terrainOuter(th) { return pondRadius(th) * 1.5; }
+function basinY(x, z) {
+  const th = Math.atan2(z, x);
+  const r = Math.hypot(x, z);
+  const u = clamp(r / pondRadius(th), 0, 1);
+  const depth = POND_DEPTH * (1 - Math.pow(u, 1.6));
+  const shallow = 1 - 0.22 * gaussWrap(th, INLET_T, INLET_SIG * 2.2);
+  return -depth * shallow;
+}
+function rippleY(x, z, t) {
+  return 0.020 * Math.sin(1.6 * x + 1.05 * t)
+    + 0.016 * Math.sin(2.4 * z - 0.85 * t)
+    + 0.011 * Math.sin(2.1 * (x + z) + 1.6 * t)
+    + 0.008 * Math.sin(4.1 * x - 2.3 * z + 2.2 * t);
+}
+
+function polarGrid(segments, ringCount, radiusFn, heightFn, colorFn, center, capBottom) {
+  const positions = [], colors = [], uvs = [], indices = [];
+  let next = 0;
+  let centerIdx = -1;
+  if (center) {
+    centerIdx = next++;
+    positions.push(0, heightFn(0, 0, 0, 0), 0);
+    const c = colorFn(0, 0, 0, 0);
+    colors.push(c.r, c.g, c.b);
+    uvs.push(0.5, 0.5);
+  }
+  const ringStart = j => center ? 1 + (j - 1) * segments : (j - 1) * segments;
+  for (let j = 1; j <= ringCount; j++) {
+    const f = center ? j / ringCount : (j - 1) / Math.max(1, ringCount - 1);
+    for (let i = 0; i < segments; i++) {
+      const th = i / segments * Math.PI * 2;
+      const r = radiusFn(th, f);
+      const x = Math.cos(th) * r, z = Math.sin(th) * r;
+      positions.push(x, heightFn(x, z, f, th), z);
+      const c = colorFn(x, z, f, th);
+      colors.push(c.r, c.g, c.b);
+      uvs.push(i / segments, f);
+    }
+  }
+  if (center) {
+    for (let i = 0; i < segments; i++) {
+      indices.push(centerIdx, ringStart(1) + i, ringStart(1) + (i + 1) % segments);
+    }
+  }
+  for (let j = 1; j < ringCount; j++) {
+    for (let i = 0; i < segments; i++) {
+      const a = ringStart(j) + i, b = ringStart(j) + (i + 1) % segments;
+      const c = ringStart(j + 1) + (i + 1) % segments, d = ringStart(j + 1) + i;
+      indices.push(a, b, c, a, c, d);
+    }
+  }
+  if (capBottom) {
+    const ci = next++;
+    positions.push(0, heightFn(0, 0, 1, 0), 0);
+    const cc = colorFn(0, 0, 1, 0);
+    colors.push(cc.r, cc.g, cc.b);
+    uvs.push(0.5, 1);
+    for (let i = 0; i < segments; i++) {
+      indices.push(ci, ringStart(ringCount) + (i + 1) % segments, ringStart(ringCount) + i);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
+}
+
+const groundMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide, roughness: 0.98, metalness: 0 });
+const vegMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide, roughness: 0.9, metalness: 0 });
+const stoneMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95, metalness: 0 });
+const woodMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85, metalness: 0 });
+const fishMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide, roughness: 0.82, metalness: 0.02, shadowSide: THREE.FrontSide });
+const waterMat = new THREE.MeshPhongMaterial({ color: 0x2e8c6e, transparent: true, opacity: 0.5, shininess: 42, specular: 0x93ccbc, flatShading: true, side: THREE.DoubleSide, depthWrite: false });
+
+const sandLight = new THREE.Color(0xb3a476);
+const sandDark = new THREE.Color(0x7f7a58);
+const wallCol = new THREE.Color(0x8d887a);
+
+const waterGeo = polarGrid(160, 18, (th, f) => pondRadius(th) * 0.998 * f, () => 0,
+  () => new THREE.Color(0xffffff), true, false);
+const water = new THREE.Mesh(waterGeo, waterMat);
+water.renderOrder = 2;
+water.receiveShadow = false;
+scene.add(water);
+const waterBase = waterGeo.attributes.position.array.slice();
+const waterPos = waterGeo.attributes.position;
+
+const basinGeo = polarGrid(160, 14,
+  (th, f) => pondRadius(th) * f,
+  (x, z, f) => f > 0.999 ? 0.36 : basinY(x, z),
+  (x, z, f) => {
+    if (f > 0.999) return wallCol.clone().multiplyScalar(1 + 0.06 * hash1(x * 7.1 + z * 3.3));
+    const d = clamp(-basinY(x, z) / POND_DEPTH, 0, 1);
+    return sandLight.clone().lerp(sandDark, d * 0.85).multiplyScalar(1 - 0.07 * hash1(x * 5.3 + z * 9.1));
+  }, true, false);
+const basin = new THREE.Mesh(basinGeo, groundMat);
+basin.receiveShadow = true;
+scene.add(basin);
+
+const terrainGeo = polarGrid(160, 10,
+  (th, f) => pondRadius(th) * (1 + 0.62 * f),
+  (x, z, f) => 0.35 + 0.10 * f + 0.03 * Math.sin(x * 1.1 + 1.7) * Math.cos(z * 1.4 - 0.6),
+  (x, z, f) => {
+    const grass = new THREE.Color(0x6e8f4d).multiplyScalar(1 + 0.10 * (hash1(x * 3.1 + z * 1.7) - 0.5));
+    const dirt = new THREE.Color(0xb0a179);
+    return dirt.clone().lerp(grass, smoothstep(0.02, 0.22, f));
+  }, false, false);
+const terrain = new THREE.Mesh(terrainGeo, groundMat);
+terrain.receiveShadow = true;
+scene.add(terrain);
+
+const baseGeo = polarGrid(96, 5,
+  (th, f) => terrainOuter(th) * (1 + 0.035 * Math.sin(f * 4.2) - 0.13 * f * f) * (1 + 0.02 * (hash1(th * 57.3 + f * 13.7) - 0.5)),
+  (x, z, f) => 0.40 - 2.35 * f,
+  (x, z, f) => new THREE.Color(0x6d5844).lerp(new THREE.Color(0x483a2d), f)
+    .multiplyScalar(1 + 0.07 * Math.sin(f * 18) + 0.05 * (hash1(x * 2.3 + z * 4.1) - 0.5)),
+  false, true);
+const earthBase = new THREE.Mesh(baseGeo, groundMat);
+earthBase.receiveShadow = true;
+scene.add(earthBase);
+
+function paint(geo, hex, jitter = 0) {
+  const g = geo.index ? geo.toNonIndexed() : geo;
+  const c = new THREE.Color(hex);
+  const n = g.attributes.position.count;
+  const arr = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const f = jitter ? 1 + (hash1(i * 0.371 + 2.17) - 0.5) * jitter : 1;
+    arr[i * 3] = c.r * f;
+    arr[i * 3 + 1] = c.g * f;
+    arr[i * 3 + 2] = c.b * f;
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+  return g;
+}
+
+function xform(geo, px, py, pz, rx = 0, ry = 0, rz = 0, s = 1) {
+  if (s !== 1) geo.scale(s, s, s);
+  if (rx) geo.rotateX(rx);
+  if (ry) geo.rotateY(ry);
+  if (rz) geo.rotateZ(rz);
+  geo.translate(px, py, pz);
+  return geo;
+}
+
+function beamGeo(from, to, w, h, hex, jitter) {
+  const dir = new THREE.Vector3().subVectors(to, from);
+  const len = dir.length();
+  dir.normalize();
+  const geo = new THREE.BoxGeometry(Math.max(len, 0.001), h, w);
+  const up = new THREE.Vector3(0, 1, 0);
+  const zAxis = new THREE.Vector3().crossVectors(dir, up);
+  if (zAxis.lengthSq() < 1e-6) zAxis.set(0, 0, 1); else zAxis.normalize();
+  const yAxis = new THREE.Vector3().crossVectors(zAxis, dir).normalize();
+  const m = new THREE.Matrix4().makeBasis(dir, yAxis, zAxis);
+  geo.applyMatrix4(m);
+  geo.translate((from.x + to.x) / 2, (from.y + to.y) / 2, (from.z + to.z) / 2);
+  return paint(geo, hex, jitter);
+}
+
+function cylGeo(from, to, r1, r2, seg, hex, jitter) {
+  const dir = new THREE.Vector3().subVectors(to, from);
+  const len = dir.length();
+  const geo = new THREE.CylinderGeometry(r2, r1, len, seg, 1);
+  geo.translate(0, len / 2, 0);
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  geo.applyQuaternion(q);
+  geo.translate(from.x, from.y, from.z);
+  return paint(geo, hex, jitter);
+}
+
+const stoneGeos = [];
+const pebbleGeos = [];
+const rockObstacles = [];
+const stoneColors = [0x8d877b, 0x968f80, 0x7e7a70, 0x9b9484, 0x878376];
+
+for (let i = 0; i < 26; i++) {
+  const th = rand(0, Math.PI * 2);
+  const r = pondRadius(th) * rand(1.01, 1.06);
+  const s = rand(0.28, 0.62);
+  const sy = s * rand(0.6, 0.85);
+  const g = new THREE.IcosahedronGeometry(1, 0);
+  g.scale(s, sy, s * rand(0.75, 1));
+  g.rotateY(rand(0, Math.PI * 2));
+  g.rotateX(rand(-0.3, 0.3));
+  g.translate(Math.cos(th) * r, 0.35 + sy * 0.3, Math.sin(th) * r);
+  stoneGeos.push(paint(g, stoneColors[i % stoneColors.length], 0.16));
+}
+
+for (let i = 0; i < 5; i++) {
+  const th = rand(0, Math.PI * 2);
+  const u = rand(0.25, 0.6);
+  const r = pondRadius(th) * u;
+  const x = Math.cos(th) * r, z = Math.sin(th) * r;
+  const s = rand(0.3, 0.6);
+  const g = new THREE.IcosahedronGeometry(1, 0);
+  g.scale(s, s * 0.7, s * rand(0.8, 1.1));
+  g.rotateY(rand(0, Math.PI * 2));
+  g.translate(x, basinY(x, z) + s * 0.32, z);
+  stoneGeos.push(paint(g, 0x6f6b60, 0.15));
+  rockObstacles.push({ x, z, r: s * 1.05 });
+}
+
+for (let i = 0; i < 7; i++) {
+  const th = -0.9 + i * 0.167;
+  const r = pondRadius(th) + 1.15 - 0.1 * i;
+  const g = new THREE.CylinderGeometry(0.34, 0.40, 0.14, 7, 1);
+  g.rotateY(rand(0, Math.PI));
+  g.scale(rand(0.85, 1.15), 1, rand(0.85, 1.15));
+  g.translate(Math.cos(th) * r, 0.40, Math.sin(th) * r);
+  stoneGeos.push(paint(g, 0x8f8879, 0.12));
+}
+
+const stones = new THREE.Mesh(mergeGeometries(stoneGeos), stoneMat);
+stones.castShadow = true;
+stones.receiveShadow = true;
+scene.add(stones);
+
+for (let i = 0; i < 80; i++) {
+  const th = rand(0, Math.PI * 2);
+  const u = rand(0.12, 0.9);
+  const r = pondRadius(th) * u;
+  const x = Math.cos(th) * r, z = Math.sin(th) * r;
+  const s = rand(0.05, 0.15);
+  const g = new THREE.IcosahedronGeometry(1, 0);
+  g.scale(s, s * 0.55, s * rand(0.8, 1.2));
+  g.rotateY(rand(0, Math.PI * 2));
+  g.translate(x, basinY(x, z) + s * 0.25, z);
+  pebbleGeos.push(paint(g, [0xb5a882, 0xa89a78, 0xbfb08c, 0x99917c][i % 4], 0.18));
+}
+const pebbles = new THREE.Mesh(mergeGeometries(pebbleGeos), stoneMat);
+pebbles.receiveShadow = true;
+scene.add(pebbles);
+
+const mossGeos = [];
+for (let i = 0; i < 14; i++) {
+  const th = rand(0, Math.PI * 2);
+  const r = pondRadius(th) * rand(1.03, 1.24);
+  const s = rand(0.35, 0.8);
+  const g = new THREE.IcosahedronGeometry(1, 0);
+  g.scale(s, rand(0.08, 0.14), s * rand(0.7, 1.1));
+  g.rotateY(rand(0, Math.PI * 2));
+  g.translate(Math.cos(th) * r, 0.37, Math.sin(th) * r);
+  mossGeos.push(paint(g, [0x5c7d3c, 0x6a8c46, 0x517539][i % 3], 0.2));
+}
+const moss = new THREE.Mesh(mergeGeometries(mossGeos), vegMat);
+moss.receiveShadow = true;
+scene.add(moss);
+
+const reedGeos = [];
+for (let i = 0; i < 7; i++) {
+  const th = rand(0, Math.PI * 2);
+  if (Math.abs(wrapAngle(th - INLET_T)) < 0.55) continue;
+  const r = pondRadius(th) * rand(0.99, 1.03);
+  const bx = Math.cos(th) * r, bz = Math.sin(th) * r;
+  const stems = 4 + Math.floor(rand(0, 3));
+  for (let k = 0; k < stems; k++) {
+    const h = rand(0.7, 1.35);
+    const dx = rand(-0.25, 0.25), dz = rand(-0.25, 0.25);
+    reedGeos.push(cylGeo(new THREE.Vector3(bx + dx * 0.2, 0.10, bz + dz * 0.2),
+      new THREE.Vector3(bx + dx, 0.10 + h, bz + dz), 0.02, 0.008, 5, [0x6f8f4f, 0x7fa055, 0x628644][k % 3], 0.15));
+    const bl = new THREE.PlaneGeometry(0.05, h * 0.75);
+    xform(bl, bx + dx, 0.10 + h * 0.55, bz + dz, rand(-0.15, 0.15), rand(0, Math.PI), rand(-0.35, 0.35));
+    reedGeos.push(paint(bl, 0x7fa552, 0.2));
+  }
+}
+const reeds = new THREE.Mesh(mergeGeometries(reedGeos), vegMat);
+scene.add(reeds);
+
+const lilyMeshes = [];
+for (let i = 0; i < 8; i++) {
+  let th = rand(0, Math.PI * 2);
+  if (Math.abs(wrapAngle(th - INLET_T)) < 0.7) th += 1.5;
+  const r = pondRadius(th) * rand(0.78, 0.9);
+  const x = Math.cos(th) * r, z = Math.sin(th) * r;
+  const shp = new THREE.Shape();
+  shp.moveTo(0, 0);
+  shp.absarc(0, 0, 1, 0.3, Math.PI * 2 - 0.3, false);
+  shp.lineTo(0, 0);
+  const g = new THREE.ShapeGeometry(shp, 12);
+  g.rotateX(-Math.PI / 2);
+  g.scale(rand(0.22, 0.34), 1, rand(0.22, 0.34));
+  g.rotateY(rand(0, Math.PI * 2));
+  const parts = [paint(g, [0x40703a, 0x4c7f42, 0x3a6635][i % 3], 0.15)];
+  if (i % 3 === 0) {
+    const fl = new THREE.ConeGeometry(0.06, 0.09, 6);
+    xform(fl, 0.12, 0.05, 0.05, 0, 0, 0);
+    parts.push(paint(fl, 0xf0a9c4, 0.1));
+  }
+  const m = new THREE.Mesh(mergeGeometries(parts), vegMat);
+  m.position.set(x, 0.075, z);
+  m.userData = { x, z };
+  scene.add(m);
+  lilyMeshes.push(m);
+}
+
+const bridgeGeos = [];
+{
+  const bHalf = 0.30, bR = 7.4;
+  const P1 = new THREE.Vector3(Math.cos(INLET_T - bHalf) * bR, 0.38, Math.sin(INLET_T - bHalf) * bR);
+  const P2 = new THREE.Vector3(Math.cos(INLET_T + bHalf) * bR, 0.38, Math.sin(INLET_T + bHalf) * bR);
+  const chord = new THREE.Vector3().subVectors(P2, P1);
+  const chordLen = chord.length();
+  const chordDir = chord.clone().normalize();
+  const across = new THREE.Vector3(-chordDir.z, 0, chordDir.x).normalize();
+  const arcH = 0.78;
+  const pointAt = s => {
+    const p = P1.clone().addScaledVector(chordDir, s * chordLen);
+    p.y = 0.38 + arcH * Math.sin(Math.PI * s);
+    return p;
+  };
+  const plankCount = 15;
+  const deckPoints = [];
+  for (let i = 0; i < plankCount; i++) {
+    const s = 0.03 + (i / (plankCount - 1)) * 0.94;
+    const a = pointAt(Math.max(0, s - 0.035));
+    const b = pointAt(Math.min(1, s + 0.035));
+    const mid = pointAt(s);
+    deckPoints.push(mid);
+    bridgeGeos.push(beamGeo(a, b, 1.02, 0.055, [0x6b4a2f, 0x63432a, 0x74512f][i % 3], 0.14));
+  }
+  for (let side = -1; side <= 1; side += 2) {
+    const tops = [];
+    for (let i = 0; i < plankCount; i++) {
+      const p = deckPoints[i].clone().addScaledVector(across, side * 0.48);
+      const top = p.clone(); top.y += 0.34;
+      tops.push(top);
+      bridgeGeos.push(beamGeo(p, top, 0.075, 0.075, 0x5b3d26, 0.1));
+    }
+    for (let i = 0; i < plankCount - 1; i++) {
+      bridgeGeos.push(beamGeo(tops[i], tops[i + 1], 0.07, 0.09, 0x5b3d26, 0.1));
+    }
+  }
+  for (const s of [0.32, 0.68]) {
+    for (let side = -1; side <= 1; side += 2) {
+      const p = pointAt(s).clone().addScaledVector(across, side * 0.34);
+      bridgeGeos.push(beamGeo(p, new THREE.Vector3(p.x, -0.35, p.z), 0.09, 0.09, 0x4e3421, 0.1));
+    }
+  }
+}
+const bridge = new THREE.Mesh(mergeGeometries(bridgeGeos), woodMat);
+bridge.castShadow = true;
+bridge.receiveShadow = true;
+scene.add(bridge);
+
+const lanternPos = new THREE.Vector3(-4.1, 0.35, -7.3);
+{
+  const geos = [];
+  const px = lanternPos.x, pz = lanternPos.z;
+  const part = (geo, hex) => { geo.translate(px, lanternPos.y, pz); geos.push(paint(geo, hex, 0.1)); };
+  const base = new THREE.CylinderGeometry(0.34, 0.42, 0.16, 6); base.translate(0, 0.08, 0); part(base, 0x938d80);
+  const pillar = new THREE.CylinderGeometry(0.11, 0.13, 0.62, 6); pillar.translate(0, 0.47, 0); part(pillar, 0x9a9488);
+  const platform = new THREE.CylinderGeometry(0.30, 0.26, 0.10, 6); platform.translate(0, 0.83, 0); part(platform, 0x8d877b);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const post = new THREE.BoxGeometry(0.07, 0.30, 0.07); post.translate(sx * 0.13, 1.02, sz * 0.13); part(post, 0x8d877b);
+  }
+  const slab = new THREE.CylinderGeometry(0.36, 0.30, 0.08, 6); slab.translate(0, 1.21, 0); part(slab, 0x938d80);
+  const roof = new THREE.ConeGeometry(0.46, 0.30, 6); roof.rotateY(Math.PI / 6); roof.translate(0, 1.40, 0); part(roof, 0x8a8478);
+  const finial = new THREE.SphereGeometry(0.075, 6, 5); finial.translate(0, 1.58, 0); part(finial, 0x938d80);
+  const tip = new THREE.ConeGeometry(0.055, 0.13, 6); tip.translate(0, 1.67, 0); part(tip, 0x8a8478);
+  const lantern = new THREE.Mesh(mergeGeometries(geos), stoneMat);
+  lantern.castShadow = true;
+  lantern.receiveShadow = true;
+  scene.add(lantern);
+  const core = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.20, 0.17),
+    new THREE.MeshStandardMaterial({ color: 0x3a2f22, emissive: 0xffb35c, emissiveIntensity: 0.85, roughness: 0.6 }));
+  core.position.set(px, lanternPos.y + 1.02, pz);
+  scene.add(core);
+}
+
+const treePos = new THREE.Vector3(-5.9, 0.35, 3.9);
+{
+  const geos = [];
+  const V = (x, y, z) => new THREE.Vector3(treePos.x + x, treePos.y + y, treePos.z + z);
+  const trunkParts = [
+    [V(0, 0, 0), V(0.15, 1.35, 0.1), 0.17, 0.12],
+    [V(0.15, 1.35, 0.1), V(-0.35, 2.1, -0.15), 0.12, 0.08],
+    [V(0.15, 1.35, 0.1), V(0.85, 2.05, 0.45), 0.11, 0.07],
+    [V(-0.35, 2.1, -0.15), V(-0.95, 2.7, -0.5), 0.08, 0.05],
+    [V(0.85, 2.05, 0.45), V(1.3, 2.75, 0.9), 0.07, 0.045],
+    [V(-0.35, 2.1, -0.15), V(0.05, 2.85, 0.25), 0.07, 0.045]
+  ];
+  for (const t of trunkParts) geos.push(cylGeo(t[0], t[1], t[2], t[3], 5, 0x4a352a, 0.12));
+  const blobs = [
+    [-1.15, 3.0, -0.6, 0.72], [-0.4, 3.15, 0.1, 0.85], [0.4, 3.05, 0.35, 0.8],
+    [1.5, 2.95, 1.0, 0.68], [0.9, 2.6, 0.6, 0.6], [-0.8, 2.55, -0.5, 0.62],
+    [0.15, 3.5, -0.15, 0.62], [0.6, 3.3, 0.7, 0.66], [-1.4, 2.6, -0.2, 0.55]
+  ];
+  const pinks = [0xf2b6cd, 0xe9a3c0, 0xf7c9da, 0xde94b5];
+  blobs.forEach((b, i) => {
+    const g = new THREE.IcosahedronGeometry(1, 0);
+    g.scale(b[3], b[3] * 0.8, b[3]);
+    g.rotateY(rand(0, Math.PI * 2));
+    g.translate(treePos.x + b[0], treePos.y + b[1], treePos.z + b[2]);
+    geos.push(paint(g, pinks[i % pinks.length], 0.14));
+  });
+  const tree = new THREE.Mesh(mergeGeometries(geos), vegMat);
+  tree.castShadow = true;
+  tree.receiveShadow = true;
+  scene.add(tree);
+}
+
+{
+  const geos = [];
+  const bx = 3.7, bz = -5.6;
+  for (let i = 0; i < 7; i++) {
+    const ox = bx + rand(-0.5, 0.5), oz = bz + rand(-0.5, 0.5);
+    const h = rand(2.0, 3.1);
+    const tiltX = rand(-0.06, 0.06), tiltZ = rand(-0.06, 0.06);
+    const topX = ox + Math.sin(tiltZ) * h, topZ = oz + Math.sin(tiltX) * h;
+    geos.push(cylGeo(new THREE.Vector3(ox, 0.35, oz), new THREE.Vector3(topX, 0.35 + h, topZ), 0.055, 0.042, 6, [0x7ca24a, 0x6f9840][i % 2], 0.1));
+    const nodes = 4 + Math.floor(rand(0, 3));
+    for (let k = 1; k <= nodes; k++) {
+      const f = k / (nodes + 1);
+      const g = new THREE.CylinderGeometry(0.062, 0.062, 0.035, 6);
+      g.translate(lerp(ox, topX, f), 0.35 + h * f, lerp(oz, topZ, f));
+      geos.push(paint(g, 0x5d8036, 0.08));
+    }
+    for (let k = 0; k < 4; k++) {
+      const lf = new THREE.PlaneGeometry(rand(0.4, 0.6), 0.055);
+      xform(lf, topX + rand(-0.2, 0.2), 0.35 + h - rand(0, 0.5), topZ + rand(-0.2, 0.2),
+        rand(-0.5, 0.5), rand(0, Math.PI * 2), rand(-0.9, -0.3));
+      geos.push(paint(lf, 0x86ad52, 0.18));
+    }
+  }
+  const bamboo = new THREE.Mesh(mergeGeometries(geos), vegMat);
+  bamboo.castShadow = true;
+  scene.add(bamboo);
+}
+
+const petalSource = new THREE.PlaneGeometry(0.085, 0.062, 2, 1);
+{
+  const pa = petalSource.attributes.position;
+  for (let i = 0; i < pa.count; i++) {
+    if (Math.abs(pa.getX(i)) < 1e-4) pa.setZ(i, 0.014);
+  }
+  petalSource.computeVertexNormals();
+}
+const petalGeo = paint(petalSource, 0xf2b3cd, 0.12);
+const petalMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide, roughness: 0.9 });
+
+const PETAL_COUNT = 130;
+const petals = new THREE.InstancedMesh(petalGeo, petalMat, PETAL_COUNT);
+petals.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(petals);
+const petalData = [];
+const canopy = { x: treePos.x, z: treePos.z, y: treePos.y + 2.9 };
+const petalMatrix = new THREE.Matrix4();
+const petalQuat = new THREE.Quaternion();
+const petalEuler = new THREE.Euler();
+const petalPos = new THREE.Vector3();
+const petalScale = new THREE.Vector3(1, 1, 1);
+function resetPetal(p, initial) {
+  p.x = canopy.x + rand(-1.6, 1.6);
+  p.z = canopy.z + rand(-1.5, 1.5);
+  p.y = initial ? rand(0.5, canopy.y) : canopy.y + rand(-0.2, 0.7);
+  p.vy = rand(0.18, 0.42);
+  p.sway = rand(0.3, 0.9);
+  p.freq = rand(0.6, 1.6);
+  p.phase = rand(0, Math.PI * 2);
+  p.rx = rand(-1, 1) * rand(0.6, 2.2);
+  p.ry = rand(-1, 1) * rand(0.6, 2.2);
+  p.rz = rand(-1, 1) * rand(0.6, 2.2);
+}
+for (let i = 0; i < PETAL_COUNT; i++) {
+  const p = {};
+  resetPetal(p, true);
+  petalData.push(p);
+}
+function updatePetals(dt, time) {
+  for (let i = 0; i < PETAL_COUNT; i++) {
+    const p = petalData[i];
+    p.y -= p.vy * dt;
+    p.x += Math.sin(time * p.freq + p.phase) * p.sway * dt;
+    p.z += Math.cos(time * p.freq * 0.8 + p.phase) * p.sway * 0.6 * dt;
+    if (p.y < 0.42) resetPetal(p, false);
+    petalEuler.set(p.rx * time + p.phase, p.ry * time, p.rz * time);
+    petalQuat.setFromEuler(petalEuler);
+    petalPos.set(p.x, p.y, p.z);
+    petalMatrix.compose(petalPos, petalQuat, petalScale);
+    petals.setMatrixAt(i, petalMatrix);
+  }
+  petals.instanceMatrix.needsUpdate = true;
+}
+
+const floatingPetals = [];
+for (let i = 0; i < 9; i++) {
+  const th = rand(0, Math.PI * 2);
+  const r = pondRadius(th) * rand(0.15, 0.75);
+  const m = new THREE.Mesh(petalGeo, petalMat);
+  m.rotation.x = -Math.PI / 2 + rand(-0.1, 0.1);
+  m.rotation.z = rand(0, Math.PI * 2);
+  m.userData = { x: Math.cos(th) * r, z: Math.sin(th) * r, spin: rand(-0.25, 0.25) };
+  m.position.set(m.userData.x, 0.02, m.userData.z);
+  scene.add(m);
+  floatingPetals.push(m);
+}
+
+const FK = {
+  t: [0, 0.06, 0.16, 0.30, 0.45, 0.60, 0.75, 0.88, 1],
+  h: [0.052, 0.070, 0.078, 0.084, 0.080, 0.066, 0.046, 0.026, 0.010],
+  w: [0.050, 0.088, 0.112, 0.106, 0.090, 0.062, 0.038, 0.020, 0.008],
+  cy: [-0.020, -0.008, -0.002, 0.000, 0.004, 0.008, 0.012, 0.016, 0.018]
+};
+function keySample(key, t) {
+  const T = FK.t;
+  t = clamp(t, 0, 1);
+  let i = 0;
+  while (i < T.length - 2 && t > T[i + 1]) i++;
+  const f = (t - T[i]) / (T[i + 1] - T[i]);
+  const ff = f * f * (3 - 2 * f);
+  return FK[key][i] + (FK[key][i + 1] - FK[key][i]) * ff;
+}
+const hAt = (t, L) => L * keySample('h', t);
+const wAt = (t, L) => L * keySample('w', t);
+const cyAt = (t, L) => L * keySample('cy', t);
+
+function buildFishBodyGeo(L, backHex, bellyHex) {
+  const N = 26, RAD = 10;
+  const positions = [], colors = [], uvs = [], indices = [];
+  const back = new THREE.Color(backHex);
+  const belly = new THREE.Color(bellyHex);
+  const mouthDark = new THREE.Color(0x2a221b);
+  const ringStart = [];
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1);
+    const x = t * L, hh = hAt(t, L), ww = wAt(t, L), cy = cyAt(t, L);
+    ringStart.push(positions.length / 3);
+    for (let j = 0; j < RAD; j++) {
+      const phi = j / RAD * Math.PI * 2;
+      const sp = Math.sin(phi), cp = Math.cos(phi);
+      const y = cy + hh * (sp < 0 ? sp * 0.72 : sp);
+      positions.push(x, y, ww * cp);
+      const v = (sp + 1) / 2;
+      const c = belly.clone().lerp(back, smoothstep(0.28, 0.78, v));
+      c.lerp(mouthDark, Math.max(0, 1 - t / 0.12) * Math.max(0, -sp) * 0.55);
+      c.multiplyScalar(1 - 0.10 * hash1(i * 3.7 + j * 1.9));
+      colors.push(c.r, c.g, c.b);
+      uvs.push(t, j / RAD);
+    }
+  }
+  for (let i = 0; i < N - 1; i++) {
+    for (let j = 0; j < RAD; j++) {
+      const a = ringStart[i] + j, b = ringStart[i] + (j + 1) % RAD;
+      const c = ringStart[i + 1] + (j + 1) % RAD, d = ringStart[i + 1] + j;
+      indices.push(a, c, b, a, d, c);
+    }
+  }
+  const noseC = positions.length / 3;
+  positions.push(-0.012 * L, cyAt(0, L), 0);
+  const nc = belly.clone().lerp(back, 0.45);
+  colors.push(nc.r, nc.g, nc.b);
+  uvs.push(0, 0.5);
+  for (let j = 0; j < RAD; j++) {
+    indices.push(noseC, ringStart[0] + (j + 1) % RAD, ringStart[0] + j);
+  }
+  const tailC = positions.length / 3;
+  positions.push(L + 0.004 * L, cyAt(1, L), 0);
+  const tc = belly.clone().lerp(back, 0.7);
+  colors.push(tc.r, tc.g, tc.b);
+  uvs.push(1, 0.5);
+  for (let j = 0; j < RAD; j++) {
+    indices.push(tailC, ringStart[N - 1] + j, ringStart[N - 1] + (j + 1) % RAD);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
+}
+
+function finShapeGeo(points, L, hex) {
+  const shp = new THREE.Shape();
+  shp.moveTo(points[0][0] * L, points[0][1] * L);
+  for (let i = 1; i < points.length; i++) shp.lineTo(points[i][0] * L, points[i][1] * L);
+  shp.closePath();
+  return paint(new THREE.ShapeGeometry(shp, 2), hex, 0.08);
+}
+
+function buildFish(L, backHex, bellyHex) {
+  const back = new THREE.Color(backHex);
+  const belly = new THREE.Color(bellyHex);
+  const finCol = back.clone().lerp(belly, 0.25).getHex();
+  const geos = [];
+  geos.push(buildFishBodyGeo(L, backHex, bellyHex).toNonIndexed());
+
+  const backY = t => cyAt(t, L) + hAt(t, L);
+  const bellyY = t => cyAt(t, L) - hAt(t, L) * 0.78;
+
+  const dorsalPts = [
+    [0.32 * L, backY(0.32)],
+    [0.37 * L, backY(0.37) + 0.095 * L],
+    [0.50 * L, backY(0.50) + 0.03 * L],
+    [0.50 * L, backY(0.50)]
+  ];
+  const dorsal = new THREE.Shape();
+  dorsal.moveTo(dorsalPts[0][0], dorsalPts[0][1]);
+  for (let i = 1; i < dorsalPts.length; i++) dorsal.lineTo(dorsalPts[i][0], dorsalPts[i][1]);
+  dorsal.closePath();
+  geos.push(paint(new THREE.ShapeGeometry(dorsal, 2), finCol, 0.08));
+
+  const adipose = new THREE.Shape();
+  adipose.moveTo(0.70 * L, backY(0.70));
+  adipose.lineTo(0.76 * L, backY(0.74) + 0.055 * L);
+  adipose.lineTo(0.81 * L, backY(0.81));
+  adipose.closePath();
+  geos.push(paint(new THREE.ShapeGeometry(adipose, 2), finCol, 0.08));
+
+  const anal = new THREE.Shape();
+  anal.moveTo(0.54 * L, bellyY(0.54));
+  anal.lineTo(0.60 * L, bellyY(0.60) - 0.075 * L);
+  anal.lineTo(0.78 * L, bellyY(0.78) - 0.05 * L);
+  anal.lineTo(0.86 * L, bellyY(0.86));
+  anal.closePath();
+  geos.push(paint(new THREE.ShapeGeometry(anal, 2), finCol, 0.08));
+
+  const eyeGeo = new THREE.SphereGeometry(0.021 * L, 7, 5);
+  const eyeCol = 0x14110c;
+  for (const side of [-1, 1]) {
+    const g = eyeGeo.clone();
+    g.translate(0.135 * L, cyAt(0.135, L) + hAt(0.135, L) * 0.5, side * wAt(0.135, L) * 0.68);
+    geos.push(paint(g, eyeCol, 0));
+  }
+
+  const mouth = new THREE.SphereGeometry(1, 10, 7);
+  mouth.scale(0.035 * L, 0.04 * L, 0.075 * L);
+  mouth.translate(0.008 * L, cyAt(0, L) - 0.012 * L, 0);
+  geos.push(paint(mouth, 0x241d18, 0));
+
+  const barbelCol = back.clone().lerp(belly, 0.5).getHex();
+  const barbels = [
+    [0.045, cyAt(0, L) - 0.012 * L, 0.082, 0.68, -0.24, 0.69, 0.27],
+    [0.05, cyAt(0, L) - 0.05 * L, 0.038, 0.42, -0.52, 0.74, 0.17],
+    [0.08, cyAt(0, L) + 0.035 * L, 0.028, 0.75, 0.10, 0.66, 0.12]
+  ];
+  for (const side of [-1, 1]) {
+    for (const b of barbels) {
+      const start = new THREE.Vector3(b[0] * L, b[1], side * b[2] * L);
+      const dir = new THREE.Vector3(b[3], b[4], side * b[5]).normalize();
+      const len = b[6] * L;
+      const g = new THREE.ConeGeometry(0.011 * L, len, 4, 1);
+      g.rotateX(Math.PI);
+      g.translate(0, -len / 2, 0);
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir);
+      g.applyQuaternion(q);
+      g.translate(start.x, start.y, start.z);
+      geos.push(paint(g, barbelCol, 0.1));
+    }
+  }
+
+  const bodyGeo = mergeGeometries(geos);
+  const bodyMesh = new THREE.Mesh(bodyGeo, fishMat);
+  bodyMesh.castShadow = true;
+
+  const tailPts = [
+    [0.01, 0.03], [0.08, 0.15], [0.19, 0.20], [0.12, 0.02], [0.18, -0.16], [0.07, -0.13], [0.01, -0.03]
+  ];
+  const tailGeo = finShapeGeo(tailPts, L, finCol);
+  const tailMesh = new THREE.Mesh(tailGeo, fishMat);
+  tailMesh.castShadow = true;
+  tailMesh.position.set(L, cyAt(1, L), 0);
+
+  const pectGeoR = new THREE.Shape();
+  pectGeoR.moveTo(0, 0.02 * L);
+  pectGeoR.lineTo(0.13 * L, -0.02 * L);
+  pectGeoR.lineTo(0.20 * L, -0.09 * L);
+  pectGeoR.lineTo(0.10 * L, -0.13 * L);
+  pectGeoR.lineTo(0.01 * L, -0.05 * L);
+  pectGeoR.closePath();
+  const pectorals = [];
+  for (const side of [-1, 1]) {
+    const g = paint(new THREE.ShapeGeometry(pectGeoR, 2), finCol, 0.08);
+    g.rotateX(-side * 1.05);
+    g.rotateY(-side * 0.45);
+    g.translate(0.24 * L, cyAt(0.24, L) - 0.02 * L, side * wAt(0.24, L) * 0.85);
+    const m = new THREE.Mesh(g, fishMat);
+    m.castShadow = true;
+    m.userData = { side, baseZ: side * wAt(0.24, L) * 0.85 };
+    pectorals.push(m);
+  }
+
+  const group = new THREE.Group();
+  group.rotation.order = 'YXZ';
+  // Geometry runs from the nose at x=0 toward the tail at +X.
+  // Rotate and steer around the middle of the fish, rather than its nose.
+  const model = new THREE.Group();
+  model.position.x = -L * 0.5;
+  model.add(bodyMesh, tailMesh, pectorals[0], pectorals[1]);
+  group.add(model);
+  return { group, bodyMesh, tailMesh, pectorals, base: bodyGeo.attributes.position.array.slice(), L };
+}
+
+class Catfish {
+  constructor(def) {
+    const f = buildFish(def.scale * 1.3, def.back, def.belly);
+    this.group = f.group;
+    this.bodyMesh = f.bodyMesh;
+    this.tailMesh = f.tailMesh;
+    this.pectorals = f.pectorals;
+    this.base = f.base;
+    this.L = f.L;
+    this.scale = def.scale;
+    this.pos = new THREE.Vector3(def.x, 0, def.z);
+    this.heading = def.heading;
+    this.speed = rand(0.45, 0.7);
+    this.targetSpeed = this.speed;
+    this.y = def.y;
+    this.yTarget = def.y;
+    this.turnRate = rand(0.9, 1.4);
+    this.roll = 0;
+    this.pitch = 0;
+    this.ampScale = 0.55;
+    this.waveK = Math.PI * 2 / (0.9 * this.L);
+    this.phase = rand(0, Math.PI * 2);
+    this.waveT = 0;
+    this.state = 'swim';
+    this.stateTimer = rand(2, 6);
+    this.surfaceTimer = rand(8, 22);
+    this.splashed = false;
+    this.target = new THREE.Vector3();
+    this.pickTarget();
+    this.group.position.set(this.pos.x, this.y, this.pos.z);
+    this.group.rotation.set(0, Math.PI - this.heading, 0);
+    scene.add(this.group);
+  }
+  pickTarget() {
+    const th = rand(0, Math.PI * 2);
+    const u = rand(0.12, 0.6);
+    const r = pondRadius(th) * u;
+    const x = Math.cos(th) * r, z = Math.sin(th) * r;
+    const depth = -basinY(x, z);
+    this.target.set(x, 0, z);
+    this.targetDepth = clamp(depth * rand(0.35, 0.65), 0.3, 0.9);
+    if (this.state === 'swim') this.yTarget = -this.targetDepth;
+  }
+  waveZ(x) {
+    const u = clamp((x / this.L - 0.12) / 0.88, 0, 1);
+    const amp = this.L * (0.004 + 0.15 * Math.pow(u, 1.7)) * this.ampScale;
+    return amp * Math.sin(this.waveK * x - this.waveT + this.phase);
+  }
+  update(dt, time) {
+    const x = this.pos.x, z = this.pos.z;
+    const r = Math.hypot(x, z) || 1e-6;
+    const th = Math.atan2(z, x);
+    const pr = pondRadius(th);
+    const depthHere = -basinY(x, z);
+
+    if (this.state === 'swim') {
+      this.stateTimer -= dt;
+      this.surfaceTimer -= dt;
+      const dT = Math.hypot(this.target.x - x, this.target.z - z);
+      if (dT < 0.55 || this.stateTimer <= 0) {
+        if (Math.random() < 0.3 && dT < 1.5) {
+          this.state = 'pause';
+          this.stateTimer = rand(1.5, 4);
+          this.targetSpeed = 0;
+        } else {
+          this.pickTarget();
+          this.stateTimer = rand(3, 9);
+          this.targetSpeed = rand(0.4, 0.85);
+        }
+      }
+      if (this.surfaceTimer <= 0 && depthHere > 0.8 && r < pr * 0.8) {
+        this.state = 'rise';
+        this.stateTimer = 6;
+        this.splashed = false;
+        this.yTarget = 0.02;
+      }
+    } else if (this.state === 'pause') {
+      this.stateTimer -= dt;
+      this.surfaceTimer -= dt;
+      if (this.stateTimer <= 0) {
+        this.state = 'swim';
+        this.stateTimer = rand(3, 8);
+        this.pickTarget();
+        this.targetSpeed = rand(0.4, 0.85);
+      }
+    } else if (this.state === 'rise') {
+      this.stateTimer -= dt;
+      this.targetSpeed = 0.32;
+      this.yTarget = 0.02;
+      if (this.y > -0.08) {
+        this.state = 'surface';
+        this.stateTimer = rand(2.2, 4.2);
+        if (!this.splashed) {
+          this.splashed = true;
+          spawnSplash(this.pos.x, this.pos.z, 0.7 + 0.55 * this.scale);
+        }
+      } else if (this.stateTimer <= 0) {
+        this.state = 'dive';
+        this.yTarget = -rand(0.5, 0.9);
+      }
+    } else if (this.state === 'surface') {
+      this.stateTimer -= dt;
+      this.targetSpeed = 0.28;
+      this.yTarget = 0.02;
+      if (this.stateTimer <= 0) {
+        this.state = 'dive';
+        this.yTarget = -rand(0.5, 0.9);
+      }
+    } else if (this.state === 'dive') {
+      this.targetSpeed = 0.5;
+      if (this.y < this.yTarget + 0.12) {
+        this.state = 'swim';
+        this.surfaceTimer = rand(28, 70);
+        this.pickTarget();
+      }
+    }
+
+    let sx = 0, sz = 0;
+    const dTx = this.target.x - x, dTz = this.target.z - z;
+    const dT = Math.hypot(dTx, dTz) + 1e-6;
+    sx += dTx / dT;
+    sz += dTz / dT;
+
+    const bodyMargin = this.L * 0.65 + 0.2;
+    const lim = pr - bodyMargin - 0.55;
+    if (r > lim) {
+      const w = Math.min(2.5, (r - lim) / (pr * 0.12));
+      sx += -x / r * w;
+      sz += -z / r * w;
+    }
+
+    const fx = Math.cos(this.heading), fz = Math.sin(this.heading);
+    const lookAhead = this.L * 0.55 + this.speed * 1.2;
+    const ax = x + fx * lookAhead, az = z + fz * lookAhead;
+    if (-basinY(ax, az) < 0.3 * this.scale + 0.18) {
+      sx += -x / r * 2.0;
+      sz += -z / r * 2.0;
+    }
+
+    for (const rock of rockObstacles) {
+      const dx = ax - rock.x, dz = az - rock.z;
+      const d = Math.hypot(dx, dz) + 1e-6;
+      const rr = rock.r + this.L * 0.4;
+      if (d < rr) {
+        const w = (1 - d / rr) * 3;
+        sx += dx / d * w;
+        sz += dz / d * w;
+      }
+    }
+
+    for (const other of fishes) {
+      if (other === this) continue;
+      const dx = x - other.pos.x, dz = z - other.pos.z;
+      const d = Math.hypot(dx, dz) + 1e-6;
+      const rr = (this.L + other.L) * 0.55;
+      if (d < rr) {
+        const w = (1 - d / rr) * 2.5;
+        sx += dx / d * w;
+        sz += dz / d * w;
+      }
+    }
+
+    if (sx === 0 && sz === 0) { sx = fx; sz = fz; }
+    const desired = Math.atan2(sz, sx);
+    const diff = wrapAngle(desired - this.heading);
+    const maxTurn = this.turnRate * dt * (0.35 + 0.65 * Math.min(1, this.speed / 0.6 + 0.3));
+    const turn = clamp(diff, -maxTurn, maxTurn);
+    this.heading = wrapAngle(this.heading + turn);
+    const turnVelocity = turn / Math.max(dt, 1e-4);
+    this.roll += (clamp(-turnVelocity * this.speed * 0.3, -0.22, 0.22) - this.roll) * (1 - Math.exp(-dt * 3));
+
+    // Slow down before tight turns, while always moving nose first.
+    const turnSpeed = this.targetSpeed * lerp(0.35, 1, Math.max(0, Math.cos(diff)));
+    this.speed += (turnSpeed - this.speed) * (1 - Math.exp(-dt * 1.4));
+
+    this.pos.x += Math.cos(this.heading) * this.speed * dt;
+    this.pos.z += Math.sin(this.heading) * this.speed * dt;
+
+    const r2 = Math.hypot(this.pos.x, this.pos.z);
+    const pr2 = pondRadius(Math.atan2(this.pos.z, this.pos.x));
+    const safeRadius = Math.max(0.5, pr2 - bodyMargin);
+    if (r2 > safeRadius) {
+      const k = safeRadius / r2;
+      this.pos.x *= k;
+      this.pos.z *= k;
+      this.target.set(0, 0, 0);
+    }
+
+    const forwardX = Math.cos(this.heading), forwardZ = Math.sin(this.heading);
+    const halfLength = this.L * 0.6;
+    const floorY = Math.max(
+      basinY(this.pos.x, this.pos.z),
+      basinY(this.pos.x + forwardX * halfLength, this.pos.z + forwardZ * halfLength),
+      basinY(this.pos.x - forwardX * halfLength, this.pos.z - forwardZ * halfLength)
+    );
+    const yMin = floorY + 0.2 * this.scale;
+    if (this.state === 'swim' || this.state === 'pause') {
+      this.yTarget = -this.targetDepth;
+    }
+    const desiredY = Math.max(yMin, this.yTarget);
+    const prevY = this.y;
+    this.y += (desiredY - this.y) * (1 - Math.exp(-dt * 1.1));
+    this.y = Math.max(yMin, this.y);
+    const vy = (this.y - prevY) / Math.max(dt, 1e-4);
+    const desiredPitch = Math.atan2(vy, Math.max(this.speed, 0.15));
+    this.pitch += (clamp(desiredPitch, -0.3, 0.3) - this.pitch) * (1 - Math.exp(-dt * 3));
+
+    this.waveT += dt * (0.8 + 1.4 * this.speed + (this.state === 'pause' ? 0.25 : 0));
+
+    const posAttr = this.bodyMesh.geometry.attributes.position;
+    const arr = posAttr.array, base = this.base;
+    for (let i = 0; i < base.length; i += 3) {
+      const bx = base[i];
+      arr[i] = bx;
+      arr[i + 1] = base[i + 1];
+      arr[i + 2] = base[i + 2] + this.waveZ(bx);
+    }
+    posAttr.needsUpdate = true;
+
+    const slopeAt = xx => (this.waveZ(xx) - this.waveZ(xx - 0.08 * this.L)) / (0.08 * this.L);
+    this.tailMesh.position.z = this.waveZ(this.L);
+    this.tailMesh.rotation.y = -Math.atan(slopeAt(this.L));
+
+    const flap = 0.16 * Math.sin(time * (3.2 + 1.2 * (this.state === 'pause' ? 1 : 0)) + this.phase * 2) * (1 - 0.4 * Math.min(1, this.speed));
+    for (const p of this.pectorals) {
+      p.position.z = this.waveZ(0.24 * this.L);
+      p.rotation.z = flap * p.userData.side;
+    }
+
+    this.group.position.set(this.pos.x, this.y, this.pos.z);
+    this.group.rotation.set(this.roll, Math.PI - this.heading, -this.pitch);
+  }
+}
+
+const fishes = [];
+const fishDefs = [
+  { scale: 0.80, back: 0x4a4a3c, belly: 0xcfc6a0, x: -3.2, z: 0.8, heading: 0.5, y: -0.45 },
+  { scale: 0.92, back: 0x46403a, belly: 0xc9bfa2, x: 2.6, z: 1.8, heading: 2.5, y: -0.6 },
+  { scale: 1.00, back: 0x3e443c, belly: 0xc4c2a4, x: -1.5, z: -2.5, heading: -0.7, y: -0.5 },
+  { scale: 1.08, back: 0x51443a, belly: 0xd2c6a4, x: 3.5, z: -1.5, heading: 3.4, y: -0.7 },
+  { scale: 1.16, back: 0x42484a, belly: 0xc8c9b2, x: 0.5, z: 2.6, heading: 1.2, y: -0.42 },
+  { scale: 1.65, back: 0x453f34, belly: 0xd0c7a6, x: -2.0, z: 1.0, heading: -2.0, y: -0.75 }
+];
+for (const def of fishDefs) fishes.push(new Catfish(def));
+
+const rings = [];
+const ringGeo = new THREE.RingGeometry(0.8, 1.0, 30);
+ringGeo.rotateX(-Math.PI / 2);
+for (let i = 0; i < 14; i++) {
+  const mat = new THREE.MeshBasicMaterial({ color: 0xdff2ea, transparent: true, opacity: 0, depthWrite: false });
+  const m = new THREE.Mesh(ringGeo, mat);
+  m.visible = false;
+  m.renderOrder = 3;
+  m.position.y = 0.075;
+  scene.add(m);
+  rings.push({ mesh: m, t: -1, dur: 1, s0: 0.2, s1: 1, o0: 0.6 });
+}
+let ringCursor = 0;
+function spawnRing(x, z, strength, delay) {
+  const r = rings[ringCursor++ % rings.length];
+  r.t = -delay;
+  r.dur = rand(1.1, 1.6);
+  r.s0 = 0.18 * strength;
+  r.s1 = rand(1.1, 1.7) * strength;
+  r.o0 = 0.55;
+  r.mesh.position.set(x, 0.075, z);
+  r.mesh.visible = true;
+}
+
+const foams = [];
+const foamGeo = new THREE.CircleGeometry(1, 18);
+foamGeo.rotateX(-Math.PI / 2);
+for (let i = 0; i < 6; i++) {
+  const mat = new THREE.MeshBasicMaterial({ color: 0xeaf7f0, transparent: true, opacity: 0, depthWrite: false });
+  const m = new THREE.Mesh(foamGeo, mat);
+  m.visible = false;
+  m.renderOrder = 3;
+  m.position.y = 0.07;
+  scene.add(m);
+  foams.push({ mesh: m, t: -1, dur: 1.4, s0: 0.25, s1: 0.6, o0: 0.5 });
+}
+let foamCursor = 0;
+function spawnFoam(x, z, strength) {
+  const f = foams[foamCursor++ % foams.length];
+  f.t = 0;
+  f.dur = rand(1.2, 1.8);
+  f.s0 = 0.22 * strength;
+  f.s1 = rand(0.5, 0.75) * strength;
+  f.o0 = 0.5;
+  f.mesh.position.set(x, 0.07, z);
+  f.mesh.visible = true;
+}
+
+const droplets = [];
+const dropletGeo = new THREE.IcosahedronGeometry(0.028, 0);
+const dropletMat = new THREE.MeshStandardMaterial({ color: 0xe4f4ec, flatShading: true, roughness: 0.35, metalness: 0 });
+for (let i = 0; i < 48; i++) {
+  const m = new THREE.Mesh(dropletGeo, dropletMat);
+  m.visible = false;
+  scene.add(m);
+  droplets.push({ mesh: m, t: 0, life: 0, vel: new THREE.Vector3() });
+}
+let dropletCursor = 0;
+function spawnDroplet(x, z, strength) {
+  const d = droplets[dropletCursor++ % droplets.length];
+  const a = rand(0, Math.PI * 2);
+  const sp = rand(0.3, 1.0) * strength;
+  d.vel.set(Math.cos(a) * sp, rand(0.9, 1.9) * strength, Math.sin(a) * sp);
+  d.mesh.position.set(x + Math.cos(a) * 0.15, 0.03, z + Math.sin(a) * 0.15);
+  d.mesh.scale.setScalar(rand(0.7, 1.3));
+  d.t = 0;
+  d.life = rand(0.6, 1.0);
+  d.mesh.visible = true;
+}
+function spawnSplash(x, z, strength) {
+  spawnRing(x, z, strength, 0);
+  spawnRing(x, z, strength, 0.16);
+  spawnRing(x, z, strength * 0.7, 0.34);
+  spawnFoam(x, z, strength);
+  const n = Math.round(9 + 6 * strength);
+  for (let i = 0; i < n; i++) spawnDroplet(x, z, strength);
+}
+
+function updateEffects(dt) {
+  for (const r of rings) {
+    if (!r.mesh.visible) continue;
+    r.t += dt;
+    if (r.t < 0) continue;
+    const k = r.t / r.dur;
+    if (k >= 1) { r.mesh.visible = false; r.t = -1; continue; }
+    const s = r.s0 + (r.s1 - r.s0) * (1 - Math.pow(1 - k, 2));
+    r.mesh.scale.set(s, 1, s);
+    r.mesh.material.opacity = r.o0 * Math.pow(1 - k, 1.5);
+  }
+  for (const f of foams) {
+    if (f.t < 0) continue;
+    f.t += dt;
+    const k = f.t / f.dur;
+    if (k >= 1) { f.mesh.visible = false; f.t = -1; continue; }
+    const s = lerp(f.s0, f.s1, Math.sqrt(k));
+    f.mesh.scale.set(s, 1, s);
+    f.mesh.material.opacity = f.o0 * Math.pow(1 - k, 1.3);
+  }
+  for (const d of droplets) {
+    if (!d.mesh.visible) continue;
+    d.t += dt;
+    d.vel.y -= 6 * dt;
+    d.mesh.position.addScaledVector(d.vel, dt);
+    d.mesh.scale.multiplyScalar(1 - dt * 0.7);
+    if (d.t >= d.life || d.mesh.position.y < -0.12) {
+      d.mesh.visible = false;
+    }
+  }
+}
+
+function updateWater(time) {
+  const arr = waterPos.array;
+  for (let i = 0; i < arr.length; i += 3) {
+    arr[i] = waterBase[i];
+    arr[i + 1] = rippleY(waterBase[i], waterBase[i + 2], time);
+    arr[i + 2] = waterBase[i + 2];
+  }
+  waterPos.needsUpdate = true;
+}
+
+let time = 0;
+const clock = new THREE.Clock();
+function animate() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  time += dt;
+  updateWater(time);
+  for (const f of fishes) f.update(dt, time);
+  updateEffects(dt);
+  updatePetals(dt, time);
+  for (const p of floatingPetals) {
+    p.position.y = rippleY(p.userData.x, p.userData.z, time) + 0.025;
+    p.rotation.z += p.userData.spin * dt;
+  }
+  for (const m of lilyMeshes) {
+    m.position.y = rippleY(m.userData.x, m.userData.z, time) + 0.035;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+renderer.setAnimationLoop(animate);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
